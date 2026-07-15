@@ -3,7 +3,7 @@ local M = {}
 local uv = vim.uv or vim.loop
 local TITLE = "jjwsm.nvim"
 local MIN_JJ_MINOR = 40
-local WORKSPACE_TEMPLATE = [[self.name().escape_json() ++ "\0" ++ self.root().escape_json() ++ "\0"]]
+local WORKSPACE_TEMPLATE = [[self.name().escape_json() ++ "\0" ++ self.root().escape_json() ++ "\0" ++ self.target().current_working_copy() ++ "\0"]]
 
 local function notify(message, level)
   vim.notify(message, level, { title = TITLE })
@@ -106,20 +106,33 @@ local function parse_workspaces(output)
   if start <= #output then
     return nil, "workspace output ended without a NUL delimiter"
   end
-  if #fields % 2 ~= 0 then
+  if #fields % 3 ~= 0 then
     return nil, "workspace output contained an incomplete record"
   end
 
   local workspaces = {}
-  for index = 1, #fields, 2 do
+  for index = 1, #fields, 3 do
+    local record_number = (index + 2) / 3
     local name_ok, name = pcall(vim.json.decode, fields[index])
     local root_ok, root = pcall(vim.json.decode, fields[index + 1])
     if not name_ok or type(name) ~= "string" then
-      return nil, ("workspace output contained invalid JSON in record %d"):format((index + 1) / 2)
+      return nil, ("workspace output contained invalid JSON in record %d"):format(record_number)
     end
+
+    local current
+    if fields[index + 2] == "true" then
+      current = true
+    elseif fields[index + 2] == "false" then
+      current = false
+    else
+      return nil, ("workspace output contained an invalid current marker in record %d"):format(record_number)
+    end
+
     if root_ok and type(root) == "string" then
-      workspaces[#workspaces + 1] = { name = name, root = root }
-    elseif fields[index + 1]:match("^<Error: Failed to resolve workspace root:") then
+      workspaces[#workspaces + 1] = { name = name, root = root, current = current }
+    elseif fields[index + 1]:match("^<Error: Failed to resolve workspace root:")
+      or fields[index + 1] == "<Error: Workspace has no recorded path: " .. name .. ">"
+    then
       -- Jujutsu renders template evaluation failures as an error fragment even
       -- inside escape_json(). Keep it framed by NUL and classify it explicitly.
       local prefix = "<Error: Failed to resolve workspace root: " .. name .. ": "
@@ -132,13 +145,79 @@ local function parse_workspaces(output)
         name = name,
         root = unresolved_root,
         root_error = fields[index + 1],
+        current = current,
       }
     else
-      return nil, ("workspace output contained invalid JSON in record %d"):format((index + 1) / 2)
+      return nil, ("workspace output contained invalid JSON in record %d"):format(record_number)
     end
   end
 
   return workspaces
+end
+
+local function remove_line_terminator(output)
+  if output:sub(-2) == "\r\n" then
+    return output:sub(1, -3)
+  end
+  if output:sub(-1) == "\n" or output:sub(-1) == "\r" then
+    return output:sub(1, -2)
+  end
+  return output
+end
+
+local function recover_current_workspace_root(cwd, workspaces, callback)
+  local current_workspaces = {}
+  local has_unresolved_root = false
+
+  for _, workspace in ipairs(workspaces) do
+    if workspace.current then
+      current_workspaces[#current_workspaces + 1] = workspace
+    end
+    if workspace.root_error then
+      has_unresolved_root = true
+    end
+  end
+
+  if not has_unresolved_root then
+    callback(workspaces)
+    return
+  end
+  if #current_workspaces ~= 1 then
+    callback(
+      nil,
+      ("Could not resolve current workspace root: Jujutsu identified %d current workspace records"):format(
+        #current_workspaces
+      )
+    )
+    return
+  end
+
+  local current_workspace = current_workspaces[1]
+  if not current_workspace.root_error then
+    callback(workspaces)
+    return
+  end
+
+  run_jj(cwd, { "workspace", "root" }, function(result, spawn_error)
+    if spawn_error then
+      callback(nil, "Could not resolve current workspace root: could not run jj workspace root: " .. spawn_error)
+      return
+    end
+    if not result or result.code ~= 0 then
+      callback(nil, "Could not resolve current workspace root: " .. result_message(result))
+      return
+    end
+
+    local root = remove_line_terminator(result.stdout or "")
+    if root == "" then
+      callback(nil, "Could not resolve current workspace root: jj workspace root returned an empty path")
+      return
+    end
+
+    current_workspace.root = root
+    current_workspace.root_error = nil
+    callback(workspaces)
+  end)
 end
 
 local function list_workspaces(cwd, callback)
@@ -157,7 +236,7 @@ local function list_workspaces(cwd, callback)
       callback(nil, "Could not parse Jujutsu workspace output: " .. parse_error)
       return
     end
-    callback(workspaces)
+    recover_current_workspace_root(cwd, workspaces, callback)
   end)
 end
 

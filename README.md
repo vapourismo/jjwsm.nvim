@@ -134,6 +134,9 @@ tab name. Failed or stale activations do not update a tab name.
 Before `switch` or `new`, the plugin inspects every workspace registered in the
 repository associated with the invoking tabpage cwd:
 
+- if the current workspace has no recorded path (as can happen with legacy
+  workspace metadata), its actual root is recovered transparently with
+  `jj workspace root` without rewriting the workspace record;
 - live directories are retained, regardless of which tool created them;
 - records for roots that definitively do not exist or are not directories are
   forgotten with `jj workspace forget`;
@@ -142,8 +145,9 @@ repository associated with the invoking tabpage cwd:
 - if Jujutsu cannot forget stale records, the requested operation is aborted.
 
 `delete` intentionally lists workspace records without performing this stale
-record cleanup. It forgets only the live, non-default workspace most
-specifically containing the invoking tabpage's captured cwd.
+record cleanup. Current-root recovery still applies, after which delete forgets
+only the live, non-default workspace most specifically containing the invoking
+tabpage's captured cwd.
 
 This metadata cleanup is limited to the current repository. The plugin never
 deletes, empties, or reuses a filesystem path. Temporary workspace directories

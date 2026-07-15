@@ -127,13 +127,17 @@ do not update tab names.
 CLEANUP AND SAFETY                                               *jjwsm-cleanup*
 
 Before switch or new, jjwsm.nvim inspects all workspaces registered in the
-current repository. Missing and non-directory roots are forgotten from
-Jujutsu. Live directories are retained, including workspaces created by other
-tools. Indeterminate roots (such as permission failures) are retained with a
-warning. A failure from `jj workspace forget` aborts the requested operation.
+current repository. If legacy metadata gives the current workspace no recorded
+path, its actual root is recovered transparently with `jj workspace root`
+without rewriting the workspace record. Missing and non-directory roots are
+forgotten from Jujutsu. Live directories are retained, including workspaces
+created by other tools. Indeterminate roots (such as permission failures) are
+retained with a warning. A failure from `jj workspace forget` aborts the
+requested operation.
 
-Delete lists workspaces without this stale-record cleanup and forgets only its
-resolved current workspace after the tabpage closes successfully.
+Delete still recovers the current root, but lists workspaces without this
+stale-record cleanup and forgets only its resolved current workspace after the
+tabpage closes successfully.
 
 The plugin never removes a directory or file. Existing candidate directories
 are never reused, including empty directories. Temporary workspaces persist

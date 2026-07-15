@@ -74,7 +74,9 @@ local function workspace_output(workspaces)
   for _, workspace in ipairs(workspaces) do
     fields[#fields + 1] = vim.json.encode(workspace.name)
     fields[#fields + 1] = "\0"
-    fields[#fields + 1] = vim.json.encode(workspace.root)
+    fields[#fields + 1] = workspace.root_error or vim.json.encode(workspace.root)
+    fields[#fields + 1] = "\0"
+    fields[#fields + 1] = workspace.current and "true" or "false"
     fields[#fields + 1] = "\0"
   end
   return table.concat(fields)
@@ -326,19 +328,301 @@ test("registers command, completes arguments, and rejects invalid dispatch", fun
   assert_equal(0, #calls, "invalid commands must not start processes")
 end)
 
-test("parses NUL-delimited JSON without treating names or roots as commands", function()
+test("parses NUL-delimited workspace records and validates their framing", function()
   local module = require("jjwsm")
   local expected = {
-    { name = "quoted-name", root = "/tmp/a path/with | bars" },
-    { name = "unicode-λ", root = "/tmp/line\nfeed" },
+    { name = "quoted-name", root = "/tmp/a path/with | bars", current = true },
+    { name = "unicode-λ", root = "/tmp/line\nfeed", current = false },
   }
   local parsed = assert(module._test.parse_workspaces(workspace_output(expected)))
   assert_equal(expected, parsed)
+
+  local stale_error = "<Error: Failed to resolve workspace root: stale: /tmp/gone: No such file or directory (os error 2)>"
+  local missing_path_error = "<Error: Workspace has no recorded path: default>"
+  local errors = assert(module._test.parse_workspaces(workspace_output({
+    { name = "stale", root_error = stale_error },
+    { name = "default", root_error = missing_path_error, current = true },
+  })))
+  assert_equal({
+    { name = "stale", root = "/tmp/gone", root_error = stale_error, current = false },
+    { name = "default", root_error = missing_path_error, current = true },
+  }, errors)
+
   local invalid, parse_error = module._test.parse_workspaces('"name"\0"unterminated')
   assert_equal(nil, invalid)
   assert_match("NUL delimiter", parse_error)
+  local malformed_marker, marker_error = module._test.parse_workspaces('"name"\0"/tmp/root"\0maybe\0')
+  assert_equal(nil, malformed_marker)
+  assert_match("invalid current marker", marker_error)
+  local incomplete, incomplete_error = module._test.parse_workspaces('"name"\0"/tmp/root"\0')
+  assert_equal(nil, incomplete)
+  assert_match("incomplete record", incomplete_error)
   assert_match("escape_json", module._test.workspace_template)
+  assert_match("current_working_copy", module._test.workspace_template)
   assert_match("\\0", module._test.workspace_template)
+end)
+
+test("recovers a legacy default root before opening the switch picker", function()
+  local sandbox = temp_dir("legacy-switch")
+  local current = vim.fs.joinpath(sandbox, "Legacy Repo ")
+  local target = vim.fs.joinpath(sandbox, "target")
+  mkdir(current)
+  mkdir(target)
+  set_tab_cwd(vim.api.nvim_get_current_tabpage(), current)
+
+  local picker = install_picker()
+  local tabby_calls = install_tabby()
+  local calls = standard_mock({
+    {
+      name = "default",
+      root_error = "<Error: Workspace has no recorded path: default>",
+      current = true,
+    },
+    { name = "target", root = target },
+  }, function(args)
+    if args[5] == "root" then
+      return result(0, current .. "\r\n")
+    end
+  end)
+
+  command("switch")
+  eventually(function()
+    return picker() ~= nil
+  end, "picker did not open after recovering the current root")
+
+  assert_equal(1, #picker().items)
+  assert_equal("target", picker().items[1].name)
+  local root_call
+  for _, call in ipairs(calls) do
+    if call.args[5] == "root" then
+      root_call = call
+    end
+  end
+  assert_true(root_call, "jj workspace root was not called")
+  assert_equal({ "jj", "--no-pager", "--color=never", "workspace", "root" }, root_call.args)
+  assert_path_equal(current, root_call.opts.cwd)
+
+  picker().confirm({ close = function() end }, picker().items[1])
+  assert_equal({ "rename_tab", "Legacy Repo [target]" }, tabby_calls[1].fargs)
+end)
+
+test("uses a recovered default root to create a workspace", function()
+  local sandbox = temp_dir("legacy-new")
+  local current = vim.fs.joinpath(sandbox, "Recovered Repo")
+  local temp_root = vim.fs.joinpath(sandbox, "os-temp")
+  mkdir(current)
+  mkdir(temp_root)
+  with_tmpdir(temp_root)
+  set_tab_cwd(vim.api.nvim_get_current_tabpage(), current)
+  install_input("feature")
+  install_tabby()
+
+  local add_call
+  standard_mock({
+    {
+      name = "default",
+      root_error = "<Error: Workspace has no recorded path: default>",
+      current = true,
+    },
+  }, function(args, opts)
+    if args[5] == "root" then
+      return result(0, current .. "\n")
+    end
+    if args[5] == "add" then
+      add_call = { args = vim.deepcopy(args), opts = vim.deepcopy(opts) }
+      assert_true(uv.fs_mkdir(args[8], 448))
+      return result(0)
+    end
+  end)
+
+  command("new")
+  eventually(function()
+    return add_call ~= nil
+  end, "workspace add did not run after recovering the current root")
+
+  local expected_root = vim.fs.joinpath(temp_root, "jjwsm.nvim", "jjwsm-Recovered Repo-1")
+  assert_equal(expected_root, add_call.args[8])
+  assert_path_equal(current, add_call.opts.cwd)
+end)
+
+test("uses a recovered non-default root to resolve deletion", function()
+  local sandbox = temp_dir("legacy-delete")
+  local default = vim.fs.joinpath(sandbox, "default")
+  local current = vim.fs.joinpath(sandbox, "feature")
+  mkdir(default)
+  mkdir(current)
+  set_tab_cwd(vim.api.nvim_get_current_tabpage(), default)
+  vim.api.nvim_cmd({ cmd = "tabnew" }, {})
+  local invocation_tab = vim.api.nvim_get_current_tabpage()
+  set_tab_cwd(invocation_tab, current)
+
+  local calls = standard_mock({
+    { name = "default", root = default },
+    {
+      name = "feature",
+      root_error = "<Error: Workspace has no recorded path: feature>",
+      current = true,
+    },
+  }, function(args)
+    if args[5] == "root" then
+      return result(0, current .. "\n")
+    end
+  end)
+
+  command("delete")
+  eventually(function()
+    return not vim.api.nvim_tabpage_is_valid(invocation_tab)
+  end, "recovered workspace tab was not closed")
+
+  local forget_call
+  for _, call in ipairs(calls) do
+    if call.args[5] == "forget" then
+      forget_call = call
+    end
+  end
+  assert_true(forget_call, "recovered workspace was not forgotten")
+  assert_equal({ "jj", "--no-pager", "--color=never", "workspace", "forget", "--", "feature" }, forget_call.args)
+end)
+
+test("retains unresolved non-current roots while forgetting stale ones", function()
+  local sandbox = temp_dir("unresolved-non-current")
+  local current = vim.fs.joinpath(sandbox, "current")
+  local target = vim.fs.joinpath(sandbox, "target")
+  local stale = vim.fs.joinpath(sandbox, "gone")
+  mkdir(current)
+  mkdir(target)
+  set_tab_cwd(vim.api.nvim_get_current_tabpage(), current)
+
+  local notifications = capture_notifications()
+  local picker = install_picker()
+  local calls = standard_mock({
+    { name = "default", root = current, current = true },
+    {
+      name = "stale",
+      root_error = "<Error: Failed to resolve workspace root: stale: "
+        .. stale
+        .. ": No such file or directory (os error 2)>",
+    },
+    {
+      name = "legacy-other",
+      root_error = "<Error: Workspace has no recorded path: legacy-other>",
+    },
+    { name = "target", root = target },
+  })
+
+  command("switch")
+  eventually(function()
+    return picker() ~= nil
+  end)
+
+  assert_true(has_notification(notifications, "retaining its record"))
+  local picked = {}
+  for _, item in ipairs(picker().items) do
+    picked[item.name] = true
+  end
+  assert_true(picked["legacy-other"])
+  assert_true(picked.target)
+
+  local forget_call
+  for _, call in ipairs(calls) do
+    assert_true(call.args[5] ~= "root", "a resolved current workspace must not use the fallback")
+    if call.args[5] == "forget" then
+      forget_call = call
+    end
+  end
+  assert_true(forget_call, "stale inline root was not forgotten")
+  assert_equal({ "jj", "--no-pager", "--color=never", "workspace", "forget", "--", "stale" }, forget_call.args)
+end)
+
+test("aborts workspace actions when current-root recovery fails", function()
+  local sandbox = temp_dir("root-failure")
+  local current = vim.fs.joinpath(sandbox, "current")
+  local target = vim.fs.joinpath(sandbox, "target")
+  mkdir(current)
+  mkdir(target)
+  set_tab_cwd(vim.api.nvim_get_current_tabpage(), current)
+
+  local notifications = capture_notifications()
+  local picker = install_picker()
+  local calls = standard_mock({
+    {
+      name = "default",
+      root_error = "<Error: Workspace has no recorded path: default>",
+      current = true,
+    },
+    { name = "target", root = target },
+  }, function(args)
+    if args[5] == "root" then
+      return result(1, "", "simulated root failure")
+    end
+  end)
+
+  command("switch")
+  eventually(function()
+    return has_notification(notifications, "Could not resolve current workspace root.*simulated root failure")
+  end)
+  assert_equal(nil, picker(), "picker must not open after root recovery fails")
+  for _, call in ipairs(calls) do
+    assert_true(call.args[5] ~= "forget", "root recovery failure must not mutate workspace metadata")
+  end
+end)
+
+test("rejects an empty recovered current root", function()
+  local sandbox = temp_dir("empty-root")
+  local current = vim.fs.joinpath(sandbox, "current")
+  local target = vim.fs.joinpath(sandbox, "target")
+  mkdir(current)
+  mkdir(target)
+  set_tab_cwd(vim.api.nvim_get_current_tabpage(), current)
+
+  local notifications = capture_notifications()
+  local picker = install_picker()
+  standard_mock({
+    {
+      name = "default",
+      root_error = "<Error: Workspace has no recorded path: default>",
+      current = true,
+    },
+    { name = "target", root = target },
+  }, function(args)
+    if args[5] == "root" then
+      return result(0, "\n")
+    end
+  end)
+
+  command("switch")
+  eventually(function()
+    return has_notification(notifications, "current workspace root.*empty path")
+  end)
+  assert_equal(nil, picker(), "picker must not open with an empty recovered root")
+end)
+
+test("rejects ambiguous current workspace markers during recovery", function()
+  local sandbox = temp_dir("ambiguous-current")
+  local current = vim.fs.joinpath(sandbox, "current")
+  mkdir(current)
+  set_tab_cwd(vim.api.nvim_get_current_tabpage(), current)
+
+  local notifications = capture_notifications()
+  local picker = install_picker()
+  local calls = standard_mock({
+    {
+      name = "default",
+      root_error = "<Error: Workspace has no recorded path: default>",
+      current = true,
+    },
+    { name = "other", root = current, current = true },
+  })
+
+  command("switch")
+  eventually(function()
+    return has_notification(notifications, "identified 2 current workspace records")
+  end)
+  assert_equal(nil, picker(), "picker must not open when current workspace identification is ambiguous")
+  for _, call in ipairs(calls) do
+    assert_true(call.args[5] ~= "root", "ambiguous records must not invoke jj workspace root")
+    assert_true(call.args[5] ~= "forget", "ambiguous records must not mutate workspace metadata")
+  end
 end)
 
 test("reports a cwd outside a Jujutsu repository", function()
