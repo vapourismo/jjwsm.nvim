@@ -294,6 +294,32 @@ local function workspace_contains(workspace, cwd)
   return root_ok and cwd_ok and real_root and real_cwd and contains_path(real_root, real_cwd) or false
 end
 
+local function workspace_specificity(workspace)
+  local root = workspace.root
+  local realpath_ok, real_root = pcall(uv.fs_realpath, root)
+  if realpath_ok and real_root then
+    root = real_root
+  end
+  return #normalize(root)
+end
+
+local function resolve_workspace(workspaces, cwd)
+  local resolved
+  local resolved_specificity = -1
+
+  for _, workspace in ipairs(workspaces) do
+    if workspace_contains(workspace, cwd) then
+      local specificity = workspace_specificity(workspace)
+      if specificity > resolved_specificity then
+        resolved = workspace
+        resolved_specificity = specificity
+      end
+    end
+  end
+
+  return resolved
+end
+
 local function tabpage_cwd(tabpage)
   local tabnr = vim.api.nvim_tabpage_get_number(tabpage)
   return vim.fn.getcwd(-1, tabnr)
@@ -476,6 +502,76 @@ local function switch_workspace(context)
   prepare(context.cwd, function(workspaces)
     local basename, basename_error = default_workspace_basename(workspaces)
     open_picker(context, workspaces, basename, basename_error)
+  end)
+end
+
+local function delete_workspace(context)
+  list_workspaces(context.cwd, function(workspaces, list_error)
+    if not workspaces then
+      error_message(list_error)
+      return
+    end
+
+    local workspace = resolve_workspace(workspaces, context.cwd)
+    if not workspace then
+      error_message("Could not resolve a Jujutsu workspace for the invoking tabpage")
+      return
+    end
+    if workspace.name == "default" then
+      warning("The default workspace cannot be deleted")
+      return
+    end
+
+    if not vim.api.nvim_tabpage_is_valid(context.tabpage) then
+      warning("The invoking tabpage no longer exists; no workspace was forgotten")
+      return
+    end
+
+    local cwd_ok, current_cwd = pcall(tabpage_cwd, context.tabpage)
+    local current_workspace = cwd_ok and current_cwd ~= "" and resolve_workspace(workspaces, current_cwd) or nil
+    if current_workspace ~= workspace then
+      warning("The invoking tabpage changed workspaces; no workspace was forgotten")
+      return
+    end
+
+    if #vim.api.nvim_list_tabpages() <= 1 then
+      warning("Cannot delete a workspace when only one tabpage remains")
+      return
+    end
+
+    local tabnr_ok, tabnr = pcall(vim.api.nvim_tabpage_get_number, context.tabpage)
+    if not tabnr_ok then
+      warning("The invoking tabpage no longer exists; no workspace was forgotten")
+      return
+    end
+
+    local closed, close_error = pcall(vim.api.nvim_cmd, { cmd = "tabclose", args = { tostring(tabnr) } }, {})
+    if not closed or vim.api.nvim_tabpage_is_valid(context.tabpage) then
+      warning(
+        ("Could not close the invoking tabpage; workspace %q remains registered: %s"):format(
+          workspace.name,
+          closed and "the tabpage is still open" or tostring(close_error)
+        )
+      )
+      return
+    end
+
+    run_jj(context.cwd, { "workspace", "forget", "--", workspace.name }, function(result, spawn_error)
+      if spawn_error then
+        error_message(
+          ("Tabpage closed, but workspace %q could not be forgotten: %s"):format(workspace.name, spawn_error)
+        )
+        return
+      end
+      if not result or result.code ~= 0 then
+        error_message(
+          ("Tabpage closed, but Jujutsu could not forget workspace %q: %s"):format(
+            workspace.name,
+            result_message(result)
+          )
+        )
+      end
+    end)
   end)
 end
 
@@ -679,15 +775,20 @@ end
 local commands = {
   switch = switch_workspace,
   new = new_workspace,
+  delete = delete_workspace,
 }
 
 function M._dispatch(args)
   if #args ~= 1 or not commands[args[1]] then
-    error_message("Usage: :Jjwsm {switch|new}")
+    error_message("Usage: :Jjwsm {switch|new|delete}")
     return
   end
 
   local tabpage = vim.api.nvim_get_current_tabpage()
+  if args[1] == "delete" and #vim.api.nvim_list_tabpages() <= 1 then
+    warning("Cannot delete a workspace when only one tabpage exists")
+    return
+  end
   local cwd_ok, cwd = pcall(tabpage_cwd, tabpage)
   if not cwd_ok or cwd == "" then
     error_message("Could not determine the invoking tabpage's working directory")
@@ -708,7 +809,7 @@ function M._complete(arglead, cmdline, cursorpos)
   end
 
   local matches = {}
-  for _, command in ipairs({ "switch", "new" }) do
+  for _, command in ipairs({ "switch", "new", "delete" }) do
     if command:sub(1, #arglead) == arglead then
       matches[#matches + 1] = command
     end

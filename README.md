@@ -1,9 +1,9 @@
 # jjwsm.nvim
 
 `jjwsm.nvim` is a small Jujutsu workspace manager for Neovim. It can switch the
-invoking tabpage to another workspace or create a temporary workspace in a new
-tabpage. There is no `setup()` call, configuration schema, default mapping, or
-filesystem-deletion command.
+invoking tabpage to another workspace, create a temporary workspace in a new
+tabpage, or forget a workspace while closing its tabpage. There is no `setup()`
+call, configuration schema, default mapping, or filesystem-deletion command.
 
 ## Requirements
 
@@ -87,6 +87,26 @@ or is empty. Creation is aborted before prompting or touching the temporary
 parent if the `default` workspace root and its non-empty basename cannot be
 determined. Cancellation and invalid input also leave the parent untouched.
 
+### `:Jjwsm delete`
+
+Closes the invoking tabpage and forgets its workspace from Jujutsu metadata.
+Despite its name, this command never deletes the workspace directory or any
+other filesystem content. It also leaves other tabpages untouched, including
+tabs whose cwd refers to the same workspace.
+
+The command is unavailable for the `default` workspace and when only one
+tabpage exists. These restrictions prevent removal of Jujutsu's primary
+workspace record and ensure Neovim always retains a tab. The invoking tabpage
+and cwd are captured when the command starts, then revalidated after the
+asynchronous workspace lookup; if that tab disappears, changes workspace, or
+becomes the only remaining tab, nothing is forgotten.
+
+The captured tab is closed first with a targeted, non-forced `:tabclose`, so
+Neovim can refuse to close modified buffers. If closure is refused, the
+workspace remains registered. After a successful close, the plugin runs
+`jj workspace forget`; a later Jujutsu failure is reported, but the closed tab
+is not recreated.
+
 ## Tab names
 
 After a new workspace or a non-default workspace switch is successfully
@@ -111,7 +131,7 @@ tab name. Failed or stale activations do not update a tab name.
 
 ## Cleanup and safety
 
-Before either command, the plugin inspects every workspace registered in the
+Before `switch` or `new`, the plugin inspects every workspace registered in the
 repository associated with the invoking tabpage cwd:
 
 - live directories are retained, regardless of which tool created them;
@@ -120,6 +140,10 @@ repository associated with the invoking tabpage cwd:
 - roots that cannot be inspected, for example because of a permission error,
   are retained and produce a warning;
 - if Jujutsu cannot forget stale records, the requested operation is aborted.
+
+`delete` intentionally lists workspace records without performing this stale
+record cleanup. It forgets only the live, non-default workspace most
+specifically containing the invoking tabpage's captured cwd.
 
 This metadata cleanup is limited to the current repository. The plugin never
 deletes, empties, or reuses a filesystem path. Temporary workspace directories

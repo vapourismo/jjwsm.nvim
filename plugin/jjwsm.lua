@@ -10,5 +10,5 @@ end, {
   complete = function(arglead, cmdline, cursorpos)
     return require("jjwsm")._complete(arglead, cmdline, cursorpos)
   end,
-  desc = "Switch between or create Jujutsu workspaces",
+  desc = "Switch, create, or forget Jujutsu workspaces",
 })

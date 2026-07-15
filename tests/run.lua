@@ -122,6 +122,49 @@ local function standard_mock(workspaces, extra)
   end)
 end
 
+local function deferred_standard_mock(workspaces, extra)
+  local pending_list
+  local calls = mock_system(function(args, opts, call_index)
+    if args[2] == "--version" then
+      return result(0, "jj 0.43.0\n")
+    end
+    if args[4] == "workspace" and args[5] == "list" then
+      return result(0, workspace_output(type(workspaces) == "function" and workspaces() or workspaces))
+    end
+    if extra then
+      local response = extra(args, opts, call_index)
+      if response then
+        return response
+      end
+    end
+    return result(0)
+  end)
+
+  local system = vim.system
+  vim.system = function(args, opts, callback)
+    if args[4] == "workspace" and args[5] == "list" then
+      local response = result(0, workspace_output(type(workspaces) == "function" and workspaces() or workspaces))
+      calls[#calls + 1] = { args = vim.deepcopy(args), opts = vim.deepcopy(opts) }
+      pending_list = { callback = callback, response = response }
+      return {
+        wait = function()
+          return response
+        end,
+      }
+    end
+    return system(args, opts, callback)
+  end
+
+  return calls, function()
+    assert_true(pending_list, "workspace list was not pending")
+    local pending = pending_list
+    pending_list = nil
+    pending.callback(pending.response)
+  end, function()
+    return pending_list ~= nil
+  end
+end
+
 local function capture_notifications()
   local notifications = {}
   vim.notify = function(message, level, opts)
@@ -273,12 +316,13 @@ test("registers command, completes arguments, and rejects invalid dispatch", fun
   local module = require("jjwsm")
 
   assert_equal(2, vim.fn.exists(":Jjwsm"))
-  assert_equal({ "switch", "new" }, module._complete("", "Jjwsm ", #"Jjwsm "))
+  assert_equal({ "switch", "new", "delete" }, module._complete("", "Jjwsm ", #"Jjwsm "))
   assert_equal({ "switch" }, module._complete("s", "Jjwsm s", #"Jjwsm s"))
+  assert_equal({ "delete" }, module._complete("d", "Jjwsm d", #"Jjwsm d"))
   assert_equal({}, module._complete("", "Jjwsm switch ", #"Jjwsm switch "))
 
   vim.api.nvim_cmd({ cmd = "Jjwsm", args = { "bogus", "extra" } }, {})
-  assert_true(has_notification(notifications, "Usage: :Jjwsm"))
+  assert_true(has_notification(notifications, "Usage: :Jjwsm {switch|new|delete}"))
   assert_equal(0, #calls, "invalid commands must not start processes")
 end)
 
@@ -310,6 +354,296 @@ test("reports a cwd outside a Jujutsu repository", function()
   eventually(function()
     return has_notification(notifications, "No Jujutsu repository")
   end)
+end)
+
+test("deletes the most-specific workspace after closing only the captured tab", function()
+  local sandbox = temp_dir("delete")
+  local default = vim.fs.joinpath(sandbox, "repo")
+  local workspace = vim.fs.joinpath(default, "workspace with spaces | safe")
+  local subdir = vim.fs.joinpath(workspace, "nested")
+  local stale = vim.fs.joinpath(sandbox, "missing-stale-workspace")
+  mkdir(default)
+  mkdir(workspace)
+  mkdir(subdir)
+  local marker = vim.fs.joinpath(workspace, "do-not-delete")
+  vim.fn.writefile({ "safe" }, marker)
+
+  local default_tab = vim.api.nvim_get_current_tabpage()
+  set_tab_cwd(default_tab, default)
+  vim.api.nvim_cmd({ cmd = "tabnew" }, {})
+  local shared_workspace_tab = vim.api.nvim_get_current_tabpage()
+  set_tab_cwd(shared_workspace_tab, workspace)
+  vim.api.nvim_cmd({ cmd = "tabnew" }, {})
+  local invocation_tab = vim.api.nvim_get_current_tabpage()
+  set_tab_cwd(invocation_tab, subdir)
+
+  local calls = standard_mock({
+    { name = "default", root = default },
+    { name = "feature | --safe", root = workspace },
+    { name = "stale", root = stale },
+  })
+
+  command("delete")
+  eventually(function()
+    return not vim.api.nvim_tabpage_is_valid(invocation_tab)
+  end, "captured tabpage was not closed")
+
+  local forget_calls = {}
+  for _, call in ipairs(calls) do
+    if call.args[5] == "forget" then
+      forget_calls[#forget_calls + 1] = call
+    end
+  end
+  assert_equal(1, #forget_calls, "delete must not clean unrelated stale records")
+  assert_equal(
+    { "jj", "--no-pager", "--color=never", "workspace", "forget", "--", "feature | --safe" },
+    forget_calls[1].args
+  )
+  assert_path_equal(subdir, forget_calls[1].opts.cwd)
+  assert_true(vim.api.nvim_tabpage_is_valid(default_tab))
+  assert_true(vim.api.nvim_tabpage_is_valid(shared_workspace_tab))
+  assert_path_equal(workspace, tab_cwd(shared_workspace_tab))
+  assert_equal({ "safe" }, vim.fn.readfile(marker))
+  assert_equal(1, vim.fn.isdirectory(workspace))
+end)
+
+test("refuses to delete the default workspace", function()
+  local sandbox = temp_dir("delete-default")
+  local default = vim.fs.joinpath(sandbox, "default")
+  local other = vim.fs.joinpath(sandbox, "other")
+  mkdir(default)
+  mkdir(other)
+
+  local invocation_tab = vim.api.nvim_get_current_tabpage()
+  set_tab_cwd(invocation_tab, default)
+  vim.api.nvim_cmd({ cmd = "tabnew" }, {})
+  set_tab_cwd(vim.api.nvim_get_current_tabpage(), other)
+  vim.api.nvim_set_current_tabpage(invocation_tab)
+
+  local notifications = capture_notifications()
+  local calls = standard_mock({
+    { name = "default", root = default },
+    { name = "other", root = other },
+  })
+  command("delete")
+  eventually(function()
+    return has_notification(notifications, "default workspace cannot be deleted")
+  end)
+
+  assert_true(vim.api.nvim_tabpage_is_valid(invocation_tab))
+  for _, call in ipairs(calls) do
+    assert_true(call.args[5] ~= "forget", "default workspace must not be forgotten")
+  end
+end)
+
+test("refuses deletion from the sole tab before starting a process", function()
+  local notifications = capture_notifications()
+  local calls = mock_system(function()
+    return result(0)
+  end)
+
+  command("delete")
+
+  assert_true(has_notification(notifications, "only one tabpage exists"))
+  assert_equal(0, #calls)
+  assert_equal(1, #vim.api.nvim_list_tabpages())
+end)
+
+test("leaves the tab and workspace registered when a modified buffer blocks tabclose", function()
+  local sandbox = temp_dir("delete-modified")
+  local default = vim.fs.joinpath(sandbox, "default")
+  local workspace = vim.fs.joinpath(sandbox, "workspace")
+  mkdir(default)
+  mkdir(workspace)
+  set_tab_cwd(vim.api.nvim_get_current_tabpage(), default)
+  vim.api.nvim_cmd({ cmd = "tabnew" }, {})
+  local invocation_tab = vim.api.nvim_get_current_tabpage()
+  set_tab_cwd(invocation_tab, workspace)
+  vim.api.nvim_cmd({ cmd = "enew" }, {})
+  local modified_buffer = vim.api.nvim_get_current_buf()
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "unsaved change" })
+  vim.bo.modified = true
+  local original_hidden = vim.o.hidden
+  vim.o.hidden = false
+  cleanup(function()
+    vim.o.hidden = original_hidden
+  end)
+  cleanup(function()
+    if vim.api.nvim_buf_is_valid(modified_buffer) then
+      vim.api.nvim_buf_delete(modified_buffer, { force = true })
+    end
+  end)
+
+  local notifications = capture_notifications()
+  local calls = standard_mock({
+    { name = "default", root = default },
+    { name = "feature", root = workspace },
+  })
+  command("delete")
+  eventually(function()
+    return has_notification(notifications, "Could not close the invoking tabpage")
+  end)
+
+  assert_true(vim.api.nvim_tabpage_is_valid(invocation_tab))
+  assert_true(vim.bo.modified)
+  for _, call in ipairs(calls) do
+    assert_true(call.args[5] ~= "forget", "workspace must remain registered after a refused close")
+  end
+end)
+
+test("does not forget when the captured tab disappears during workspace listing", function()
+  local sandbox = temp_dir("delete-disappeared")
+  local default = vim.fs.joinpath(sandbox, "default")
+  local workspace = vim.fs.joinpath(sandbox, "workspace")
+  mkdir(default)
+  mkdir(workspace)
+  local default_tab = vim.api.nvim_get_current_tabpage()
+  set_tab_cwd(default_tab, default)
+  vim.api.nvim_cmd({ cmd = "tabnew" }, {})
+  local invocation_tab = vim.api.nvim_get_current_tabpage()
+  set_tab_cwd(invocation_tab, workspace)
+
+  local notifications = capture_notifications()
+  local calls, release_list, list_pending = deferred_standard_mock({
+    { name = "default", root = default },
+    { name = "feature", root = workspace },
+  })
+  command("delete")
+  eventually(list_pending, "workspace list did not start")
+  vim.api.nvim_cmd({ cmd = "tabclose", bang = true }, {})
+  release_list()
+  eventually(function()
+    return has_notification(notifications, "invoking tabpage no longer exists")
+  end)
+
+  assert_true(vim.api.nvim_tabpage_is_valid(default_tab))
+  for _, call in ipairs(calls) do
+    assert_true(call.args[5] ~= "forget")
+  end
+end)
+
+test("does not forget when the captured tab changes workspaces during listing", function()
+  local sandbox = temp_dir("delete-changed")
+  local default = vim.fs.joinpath(sandbox, "default")
+  local workspace = vim.fs.joinpath(sandbox, "workspace")
+  local other = vim.fs.joinpath(sandbox, "other")
+  mkdir(default)
+  mkdir(workspace)
+  mkdir(other)
+  set_tab_cwd(vim.api.nvim_get_current_tabpage(), default)
+  vim.api.nvim_cmd({ cmd = "tabnew" }, {})
+  local invocation_tab = vim.api.nvim_get_current_tabpage()
+  set_tab_cwd(invocation_tab, workspace)
+
+  local notifications = capture_notifications()
+  local calls, release_list, list_pending = deferred_standard_mock({
+    { name = "default", root = default },
+    { name = "feature", root = workspace },
+    { name = "other", root = other },
+  })
+  command("delete")
+  eventually(list_pending, "workspace list did not start")
+  set_tab_cwd(invocation_tab, other)
+  release_list()
+  eventually(function()
+    return has_notification(notifications, "invoking tabpage changed workspaces")
+  end)
+
+  assert_true(vim.api.nvim_tabpage_is_valid(invocation_tab))
+  assert_path_equal(other, tab_cwd(invocation_tab))
+  for _, call in ipairs(calls) do
+    assert_true(call.args[5] ~= "forget")
+  end
+end)
+
+test("rechecks the sole-tab restriction immediately before closing", function()
+  local sandbox = temp_dir("delete-sole-race")
+  local default = vim.fs.joinpath(sandbox, "default")
+  local workspace = vim.fs.joinpath(sandbox, "workspace")
+  mkdir(default)
+  mkdir(workspace)
+  local default_tab = vim.api.nvim_get_current_tabpage()
+  set_tab_cwd(default_tab, default)
+  vim.api.nvim_cmd({ cmd = "tabnew" }, {})
+  local invocation_tab = vim.api.nvim_get_current_tabpage()
+  set_tab_cwd(invocation_tab, workspace)
+
+  local notifications = capture_notifications()
+  local calls, release_list, list_pending = deferred_standard_mock({
+    { name = "default", root = default },
+    { name = "feature", root = workspace },
+  })
+  command("delete")
+  eventually(list_pending, "workspace list did not start")
+  vim.api.nvim_cmd({ cmd = "tabclose", args = { tostring(vim.api.nvim_tabpage_get_number(default_tab)) }, bang = true }, {})
+  release_list()
+  eventually(function()
+    return has_notification(notifications, "only one tabpage remains")
+  end)
+
+  assert_true(vim.api.nvim_tabpage_is_valid(invocation_tab))
+  assert_equal(1, #vim.api.nvim_list_tabpages())
+  for _, call in ipairs(calls) do
+    assert_true(call.args[5] ~= "forget")
+  end
+end)
+
+test("reports forget failure after closing the workspace tab", function()
+  local sandbox = temp_dir("delete-forget-failure")
+  local default = vim.fs.joinpath(sandbox, "default")
+  local workspace = vim.fs.joinpath(sandbox, "workspace")
+  mkdir(default)
+  mkdir(workspace)
+  set_tab_cwd(vim.api.nvim_get_current_tabpage(), default)
+  vim.api.nvim_cmd({ cmd = "tabnew" }, {})
+  local invocation_tab = vim.api.nvim_get_current_tabpage()
+  set_tab_cwd(invocation_tab, workspace)
+
+  local notifications = capture_notifications()
+  standard_mock({
+    { name = "default", root = default },
+    { name = "feature", root = workspace },
+  }, function(args)
+    if args[5] == "forget" then
+      return result(1, "", "simulated forget failure")
+    end
+  end)
+  command("delete")
+  eventually(function()
+    return has_notification(notifications, "Jujutsu could not forget workspace.*simulated forget failure")
+  end)
+
+  assert_true(not vim.api.nvim_tabpage_is_valid(invocation_tab))
+  assert_equal(1, #vim.api.nvim_list_tabpages())
+end)
+
+test("reports an error when no workspace contains the captured cwd", function()
+  local sandbox = temp_dir("delete-unresolved")
+  local default = vim.fs.joinpath(sandbox, "default")
+  local workspace = vim.fs.joinpath(sandbox, "workspace")
+  local unrelated = vim.fs.joinpath(sandbox, "unrelated")
+  mkdir(default)
+  mkdir(workspace)
+  mkdir(unrelated)
+  set_tab_cwd(vim.api.nvim_get_current_tabpage(), default)
+  vim.api.nvim_cmd({ cmd = "tabnew" }, {})
+  local invocation_tab = vim.api.nvim_get_current_tabpage()
+  set_tab_cwd(invocation_tab, unrelated)
+
+  local notifications = capture_notifications()
+  local calls = standard_mock({
+    { name = "default", root = default },
+    { name = "feature", root = workspace },
+  })
+  command("delete")
+  eventually(function()
+    return has_notification(notifications, "Could not resolve a Jujutsu workspace")
+  end)
+
+  assert_true(vim.api.nvim_tabpage_is_valid(invocation_tab))
+  for _, call in ipairs(calls) do
+    assert_true(call.args[5] ~= "forget")
+  end
 end)
 
 test("forgets stale records and switches only the captured tabpage", function()
@@ -1067,6 +1401,41 @@ test("real Jujutsu creation uses the exact repository-aware temporary layout", f
   end
   assert_path_equal(expected, names["prompted real workspace"])
   assert_equal({ "rename_tab", "repo[prompted real workspace]" }, tabby_calls[1].fargs)
+end)
+
+test("real Jujutsu deletion forgets the record and preserves its directory", function()
+  local sandbox = temp_dir("real-delete")
+  local repo = vim.fs.joinpath(sandbox, "repo")
+  local workspace = vim.fs.joinpath(sandbox, "workspace to forget")
+  run_sync({ "jj", "git", "init", repo }, sandbox)
+  run_sync({ "jj", "workspace", "add", "--name", "delete me", workspace }, repo)
+  local marker = vim.fs.joinpath(workspace, "keep-me")
+  vim.fn.writefile({ "safe" }, marker)
+
+  set_tab_cwd(vim.api.nvim_get_current_tabpage(), repo)
+  vim.api.nvim_cmd({ cmd = "tabnew" }, {})
+  local invocation_tab = vim.api.nvim_get_current_tabpage()
+  set_tab_cwd(invocation_tab, workspace)
+
+  command("delete")
+  eventually(function()
+    return not vim.api.nvim_tabpage_is_valid(invocation_tab)
+  end, "real deletion did not close the workspace tab", 10000)
+  eventually(function()
+    local listed_ok, workspaces = pcall(real_workspace_list, repo)
+    if not listed_ok then
+      return false
+    end
+    for _, listed in ipairs(workspaces) do
+      if listed.name == "delete me" then
+        return false
+      end
+    end
+    return true
+  end, "real deletion did not forget the workspace record", 10000)
+
+  assert_equal(1, vim.fn.isdirectory(workspace))
+  assert_equal({ "safe" }, vim.fn.readfile(marker))
 end)
 
 for _, item in ipairs(tests) do
