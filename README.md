@@ -48,37 +48,42 @@ cwd is changed.
 
 ### `:Jjwsm new`
 
-Creates a workspace named `jjwsm-<repository>-N`, opens one blank tabpage, and
-sets that tabpage's cwd to the new workspace root. `<repository>` is the basename
-of the retained `default` workspace root. It is used verbatim, including spaces,
-case, dots, and punctuation. For a default root of `/work/my-repo`, the first
-workspace is named `jjwsm-my-repo-1` and uses this layout:
+Prompts for a workspace name with `vim.ui.input()`, creates that workspace,
+opens one blank tabpage, and sets the tabpage's cwd to the new workspace root.
+The prompt is `Workspace name: ` and has no generated default, so installed UI
+providers can customize it. A nonblank name is preserved verbatim and becomes
+the Jujutsu workspace identifier. Cancelling reports an informational notice;
+blank names and names already registered in the repository are rejected.
+
+The temporary path is generated independently from the prompted name. It uses
+this layout:
 
 ```text
 $TMPDIR/jjwsm.nvim/jjwsm-my-repo-1
 ```
 
-Allocation starts at `N = 1` and uses the lowest counter for which both of these
-are free:
-
-- the name `jjwsm-<repository>-N` in the current Jujutsu repository;
-- the shared path `$TMPDIR/jjwsm.nvim/jjwsm-<repository>-N`.
+Here, `my-repo` is the basename of the retained `default` workspace root. The
+basename is used verbatim, including spaces, case, dots, and punctuation.
+Allocation starts at `N = 1` and uses the lowest counter whose generated path
+does not exist. For example, a prompted name of `feature: parser work` can be
+registered at the path above; the identifier does not affect the path.
 
 The operating system temporary root comes from `vim.uv.os_tmpdir()`, so
 `$TMPDIR` above is descriptive rather than a literal environment-variable
 lookup. The shared parent is created as mode `0700` when absent. An existing
 parent must be a real directory; symlinks and non-directory paths are rejected.
 The final repository-specific directory must not exist before creation and is
-created and populated by `jj workspace add` itself. Legacy `jjwsm-N` names do
-not reserve counters in the repository-specific namespace.
+created and populated by `jj workspace add` itself.
 
-If another process wins a path or workspace-name race, allocation resumes from
-the next counter using the same derived repository basename. Unrelated Jujutsu
-failures are reported without opening a tab. Because the path namespace is
-shared, an existing candidate directory is never reused, even when it belongs
-to another repository or is empty. Creation is aborted before touching the
-temporary workspace parent if the `default` workspace root and its non-empty
-basename cannot be determined.
+If another process wins a generated-path race, allocation resumes from the next
+counter with the same prompted workspace name and derived repository basename.
+If the rescan instead shows that the prompted name was concurrently registered,
+creation stops. Other Jujutsu validation and creation failures are reported
+without opening a tab. Because the path namespace is shared, an existing
+candidate directory is never reused, even when it belongs to another repository
+or is empty. Creation is aborted before prompting or touching the temporary
+parent if the `default` workspace root and its non-empty basename cannot be
+determined. Cancellation and invalid input also leave the parent untouched.
 
 ## Cleanup and safety
 

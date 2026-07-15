@@ -504,19 +504,17 @@ local function workspace_prefix(workspaces)
   return "jjwsm-" .. basename .. "-"
 end
 
-local function allocate_candidate(parent, prefix, workspaces, first_counter)
-  local names = registered_names(workspaces)
+local function allocate_candidate(parent, prefix, first_counter)
   local counter = math.max(1, first_counter or 1)
 
   while true do
-    local name = prefix .. counter
-    local root = path_join(parent, name)
+    local root = path_join(parent, prefix .. counter)
     local state, detail = lstat_path(root)
     if state == "unknown" then
       return nil, ("Could not inspect workspace candidate %s: %s"):format(root, detail)
     end
-    if state == "missing" and not names[name] then
-      return { name = name, root = root, counter = counter }
+    if state == "missing" then
+      return { root = root, counter = counter }
     end
     counter = counter + 1
   end
@@ -548,14 +546,14 @@ local function open_new_workspace(root)
   end
 end
 
-local function attempt_new_workspace(context, parent, prefix, workspaces, first_counter)
-  local candidate, allocation_error = allocate_candidate(parent, prefix, workspaces, first_counter)
+local function attempt_new_workspace(context, parent, prefix, workspace_name, first_counter)
+  local candidate, allocation_error = allocate_candidate(parent, prefix, first_counter)
   if not candidate then
     error_message(allocation_error)
     return
   end
 
-  run_jj(context.cwd, { "workspace", "add", "--name", candidate.name, candidate.root }, function(result, spawn_error)
+  run_jj(context.cwd, { "workspace", "add", "--name", workspace_name, candidate.root }, function(result, spawn_error)
     if spawn_error then
       error_message("Could not run jj while creating a workspace: " .. spawn_error)
       return
@@ -569,7 +567,11 @@ local function attempt_new_workspace(context, parent, prefix, workspaces, first_
             )
             return
           end
-          attempt_new_workspace(context, parent, prefix, updated, candidate.counter + 1)
+          if registered_names(updated)[workspace_name] then
+            error_message(("Workspace %q is already registered in this repository"):format(workspace_name))
+            return
+          end
+          attempt_new_workspace(context, parent, prefix, workspace_name, candidate.counter + 1)
         end)
       else
         error_message("Jujutsu could not create workspace: " .. result_message(result))
@@ -599,12 +601,30 @@ local function new_workspace(context)
       return
     end
 
-    local parent, parent_error = ensure_workspace_parent()
-    if not parent then
-      error_message(parent_error)
-      return
+    local prompted, prompt_error = pcall(vim.ui.input, { prompt = "Workspace name: " }, function(workspace_name)
+      if workspace_name == nil then
+        notify("Workspace creation cancelled", vim.log.levels.INFO)
+        return
+      end
+      if trim(workspace_name) == "" then
+        error_message("Workspace name cannot be blank")
+        return
+      end
+      if registered_names(workspaces)[workspace_name] then
+        error_message(("Workspace %q is already registered in this repository"):format(workspace_name))
+        return
+      end
+
+      local parent, parent_error = ensure_workspace_parent()
+      if not parent then
+        error_message(parent_error)
+        return
+      end
+      attempt_new_workspace(context, parent, prefix, workspace_name, 1)
+    end)
+    if not prompted then
+      error_message("Could not prompt for a workspace name: " .. tostring(prompt_error))
     end
-    attempt_new_workspace(context, parent, prefix, workspaces, 1)
   end)
 end
 

@@ -2,6 +2,7 @@ local uv = vim.uv
 local project_root = vim.fn.getcwd()
 local original_system = vim.system
 local original_notify = vim.notify
+local original_input = vim.ui.input
 local original_tmpdir = uv.os_tmpdir
 
 local tests = {}
@@ -141,6 +142,18 @@ local function has_notification(notifications, pattern)
   return false
 end
 
+local function install_input(response)
+  local calls = {}
+  vim.ui.input = function(opts, on_confirm)
+    calls[#calls + 1] = vim.deepcopy(opts)
+    on_confirm(response)
+  end
+  cleanup(function()
+    vim.ui.input = original_input
+  end)
+  return calls
+end
+
 local function install_picker()
   local captured
   package.loaded.snacks = {
@@ -187,6 +200,7 @@ end
 local function reset_editor()
   vim.system = original_system
   vim.notify = original_notify
+  vim.ui.input = original_input
   uv.os_tmpdir = original_tmpdir
   package.loaded.snacks = nil
   _G.Snacks = nil
@@ -441,7 +455,7 @@ test("aborts when Jujutsu cannot forget stale records", function()
   assert_equal(nil, picker(), "picker must not open after cleanup failure")
 end)
 
-test("allocates the lowest repository-specific counter absent from names and paths", function()
+test("allocates the lowest repository-specific counter absent from paths", function()
   local parent = temp_dir("allocation")
   local prefix = "jjwsm-Repo.Name-"
   mkdir(vim.fs.joinpath(parent, "jjwsm-Repo.Name-1"))
@@ -452,21 +466,15 @@ test("allocates the lowest repository-specific counter absent from names and pat
     { name = "default", root = "/work/$Repo With [Punctuation].v1!" },
   }))
 
-  local candidate = assert(module._test.allocate_candidate(parent, prefix, {
-    { name = "jjwsm-Repo.Name-4", root = "/somewhere/else" },
-    { name = "jjwsm-2", root = "/legacy/workspace" },
-  }, 1))
-  assert_equal("jjwsm-Repo.Name-2", candidate.name)
+  local candidate = assert(module._test.allocate_candidate(parent, prefix, 1))
   assert_equal(vim.fs.joinpath(parent, "jjwsm-Repo.Name-2"), candidate.root)
 
   mkdir(candidate.root)
-  local next_candidate = assert(module._test.allocate_candidate(parent, prefix, {
-    { name = "jjwsm-Repo.Name-4", root = "/somewhere/else" },
-  }, 1))
-  assert_equal("jjwsm-Repo.Name-5", next_candidate.name)
+  local next_candidate = assert(module._test.allocate_candidate(parent, prefix, 1))
+  assert_equal(vim.fs.joinpath(parent, "jjwsm-Repo.Name-4"), next_candidate.root)
 end)
 
-test("creates an exact repository-aware workspace with spaces and one blank tab", function()
+test("passes a prompted name verbatim while generating the repository-aware path", function()
   local sandbox = temp_dir("new")
   local current = vim.fs.joinpath(sandbox, "Repo With Spaces.v1+Draft")
   local temp_root = vim.fs.joinpath(sandbox, "os-temp")
@@ -474,6 +482,8 @@ test("creates an exact repository-aware workspace with spaces and one blank tab"
   mkdir(temp_root)
   with_tmpdir(temp_root)
   set_tab_cwd(vim.api.nvim_get_current_tabpage(), current)
+  local prompted_name = "  Feature: spaces + punctuation!?  "
+  local input_calls = install_input(prompted_name)
 
   local add_call
   standard_mock({ { name = "default", root = current } }, function(args, opts)
@@ -490,14 +500,104 @@ test("creates an exact repository-aware workspace with spaces and one blank tab"
   end, "new workspace tab did not open")
 
   local expected_parent = vim.fs.joinpath(temp_root, "jjwsm.nvim")
-  local expected_name = "jjwsm-Repo With Spaces.v1+Draft-1"
-  local expected_root = vim.fs.joinpath(expected_parent, expected_name)
+  local expected_root = vim.fs.joinpath(expected_parent, "jjwsm-Repo With Spaces.v1+Draft-1")
   assert_true(add_call, "workspace add was not called")
-  assert_equal({ "jj", "--no-pager", "--color=never", "workspace", "add", "--name", expected_name, expected_root }, add_call.args)
+  assert_equal({ "Workspace name: " }, { input_calls[1].prompt })
+  assert_equal(nil, input_calls[1].default, "the prompt must not have a generated default")
+  assert_equal(
+    { "jj", "--no-pager", "--color=never", "workspace", "add", "--name", prompted_name, expected_root },
+    add_call.args
+  )
   assert_path_equal(current, add_call.opts.cwd)
   assert_equal("rwx------", vim.fn.getfperm(expected_parent))
   assert_path_equal(expected_root, tab_cwd(vim.api.nvim_get_current_tabpage()))
   assert_equal("", vim.api.nvim_buf_get_name(0), "new tab should contain a blank buffer")
+end)
+
+test("cancels workspace creation without creating a parent or tab", function()
+  local sandbox = temp_dir("cancel-new")
+  local current = vim.fs.joinpath(sandbox, "current")
+  local temp_root = vim.fs.joinpath(sandbox, "os-temp")
+  local parent = vim.fs.joinpath(temp_root, "jjwsm.nvim")
+  mkdir(current)
+  mkdir(temp_root)
+  with_tmpdir(temp_root)
+  set_tab_cwd(vim.api.nvim_get_current_tabpage(), current)
+
+  local notifications = capture_notifications()
+  local input_calls = install_input(nil)
+  local calls = standard_mock({ { name = "default", root = current } })
+
+  command("new")
+  eventually(function()
+    return has_notification(notifications, "creation cancelled")
+  end)
+
+  assert_equal({ prompt = "Workspace name: " }, input_calls[1])
+  assert_equal(vim.log.levels.INFO, notifications[#notifications].level)
+  for _, call in ipairs(calls) do
+    assert_true(call.args[5] ~= "add", "cancellation must not attempt workspace creation")
+  end
+  assert_equal(0, vim.fn.isdirectory(parent))
+  assert_equal(1, #vim.api.nvim_list_tabpages())
+end)
+
+test("rejects a blank workspace name without creating a parent", function()
+  local sandbox = temp_dir("blank-name")
+  local current = vim.fs.joinpath(sandbox, "current")
+  local temp_root = vim.fs.joinpath(sandbox, "os-temp")
+  local parent = vim.fs.joinpath(temp_root, "jjwsm.nvim")
+  mkdir(current)
+  mkdir(temp_root)
+  with_tmpdir(temp_root)
+  set_tab_cwd(vim.api.nvim_get_current_tabpage(), current)
+
+  local notifications = capture_notifications()
+  install_input(" \t ")
+  local calls = standard_mock({ { name = "default", root = current } })
+
+  command("new")
+  eventually(function()
+    return has_notification(notifications, "cannot be blank")
+  end)
+
+  assert_equal(vim.log.levels.ERROR, notifications[#notifications].level)
+  for _, call in ipairs(calls) do
+    assert_true(call.args[5] ~= "add", "blank input must not attempt workspace creation")
+  end
+  assert_equal(0, vim.fn.isdirectory(parent))
+  assert_equal(1, #vim.api.nvim_list_tabpages())
+end)
+
+test("rejects an already-registered workspace name without creating a parent", function()
+  local sandbox = temp_dir("duplicate-name")
+  local current = vim.fs.joinpath(sandbox, "current")
+  local existing = vim.fs.joinpath(sandbox, "existing")
+  local temp_root = vim.fs.joinpath(sandbox, "os-temp")
+  local parent = vim.fs.joinpath(temp_root, "jjwsm.nvim")
+  mkdir(current)
+  mkdir(existing)
+  mkdir(temp_root)
+  with_tmpdir(temp_root)
+  set_tab_cwd(vim.api.nvim_get_current_tabpage(), current)
+
+  local notifications = capture_notifications()
+  install_input("taken name")
+  local calls = standard_mock({
+    { name = "default", root = current },
+    { name = "taken name", root = existing },
+  })
+
+  command("new")
+  eventually(function()
+    return has_notification(notifications, "already registered")
+  end)
+
+  for _, call in ipairs(calls) do
+    assert_true(call.args[5] ~= "add", "duplicate input must not attempt workspace creation")
+  end
+  assert_equal(0, vim.fn.isdirectory(parent))
+  assert_equal(1, #vim.api.nvim_list_tabpages())
 end)
 
 test("aborts before creating a parent when the default workspace is missing", function()
@@ -511,6 +611,7 @@ test("aborts before creating a parent when the default workspace is missing", fu
   set_tab_cwd(vim.api.nvim_get_current_tabpage(), current)
 
   local notifications = capture_notifications()
+  local input_calls = install_input("must not be requested")
   local add_called = false
   standard_mock({ { name = "other", root = current } }, function(args)
     if args[5] == "add" then
@@ -523,6 +624,7 @@ test("aborts before creating a parent when the default workspace is missing", fu
     return has_notification(notifications, "default workspace root")
   end)
   assert_true(not add_called)
+  assert_equal(0, #input_calls)
   assert_equal(0, vim.fn.isdirectory(parent))
   assert_equal(1, #vim.api.nvim_list_tabpages())
 end)
@@ -538,6 +640,7 @@ test("aborts before creating a parent when the default root basename is empty", 
   set_tab_cwd(vim.api.nvim_get_current_tabpage(), current)
 
   local notifications = capture_notifications()
+  local input_calls = install_input("must not be requested")
   local add_called = false
   standard_mock({ { name = "default", root = "/" } }, function(args)
     if args[5] == "add" then
@@ -550,6 +653,7 @@ test("aborts before creating a parent when the default root basename is empty", 
     return has_notification(notifications, "non%-empty basename")
   end)
   assert_true(not add_called)
+  assert_equal(0, #input_calls)
   assert_equal(0, vim.fn.isdirectory(parent))
   assert_equal(1, #vim.api.nvim_list_tabpages())
 end)
@@ -566,6 +670,7 @@ test("rejects a non-directory temporary parent without touching it", function()
   set_tab_cwd(vim.api.nvim_get_current_tabpage(), current)
 
   local notifications = capture_notifications()
+  install_input("new workspace")
   local add_called = false
   standard_mock({ { name = "default", root = current } }, function(args)
     if args[5] == "add" then
@@ -589,10 +694,12 @@ test("rescans from the next counter after a concurrent collision", function()
   mkdir(temp_root)
   with_tmpdir(temp_root)
   set_tab_cwd(vim.api.nvim_get_current_tabpage(), current)
+  install_input("collision workspace")
 
   local parent = vim.fs.joinpath(temp_root, "jjwsm.nvim")
   local list_count = 0
   local add_names = {}
+  local add_roots = {}
   mock_system(function(args)
     if args[2] == "--version" then
       return result(0, "jj 0.43.0\n")
@@ -611,6 +718,7 @@ test("rescans from the next counter after a concurrent collision", function()
     end
     if args[5] == "add" then
       add_names[#add_names + 1] = args[7]
+      add_roots[#add_roots + 1] = args[8]
       assert_true(uv.fs_mkdir(args[8], 448))
       if #add_names == 1 then
         return result(1, "", "Error: File exists (os error 17)")
@@ -624,7 +732,11 @@ test("rescans from the next counter after a concurrent collision", function()
   eventually(function()
     return #vim.api.nvim_list_tabpages() == 2
   end)
-  assert_equal({ "jjwsm-Collision Repo-1", "jjwsm-Collision Repo-2" }, add_names)
+  assert_equal({ "collision workspace", "collision workspace" }, add_names)
+  assert_equal({
+    vim.fs.joinpath(parent, "jjwsm-Collision Repo-1"),
+    vim.fs.joinpath(parent, "jjwsm-Collision Repo-2"),
+  }, add_roots)
   assert_path_equal(
     vim.fs.joinpath(parent, "jjwsm-Collision Repo-2"),
     tab_cwd(vim.api.nvim_get_current_tabpage())
@@ -633,6 +745,54 @@ test("rescans from the next counter after a concurrent collision", function()
     "directory",
     require("jjwsm")._test.classify_directory(vim.fs.joinpath(parent, "jjwsm-Collision Repo-1"))
   )
+end)
+
+test("stops retrying when a collision rescan finds the prompted name", function()
+  local sandbox = temp_dir("concurrent-name")
+  local current = vim.fs.joinpath(sandbox, "Concurrent Repo")
+  local existing = vim.fs.joinpath(sandbox, "concurrent-winner")
+  local temp_root = vim.fs.joinpath(sandbox, "os-temp")
+  mkdir(current)
+  mkdir(existing)
+  mkdir(temp_root)
+  with_tmpdir(temp_root)
+  set_tab_cwd(vim.api.nvim_get_current_tabpage(), current)
+  install_input("contended name")
+
+  local notifications = capture_notifications()
+  local parent = vim.fs.joinpath(temp_root, "jjwsm.nvim")
+  local list_count = 0
+  local add_count = 0
+  mock_system(function(args)
+    if args[2] == "--version" then
+      return result(0, "jj 0.43.0\n")
+    end
+    if args[5] == "list" then
+      list_count = list_count + 1
+      local listed = { { name = "default", root = current } }
+      if list_count > 1 then
+        listed[#listed + 1] = { name = "contended name", root = existing }
+      end
+      return result(0, workspace_output(listed))
+    end
+    if args[5] == "add" then
+      add_count = add_count + 1
+      assert_equal("contended name", args[7])
+      assert_true(uv.fs_mkdir(args[8], 448))
+      return result(1, "", "Error: already exists")
+    end
+    return result(0)
+  end)
+
+  command("new")
+  eventually(function()
+    return has_notification(notifications, "already registered")
+  end)
+
+  assert_equal(1, add_count)
+  assert_equal(2, list_count)
+  assert_equal(1, vim.fn.isdirectory(vim.fs.joinpath(parent, "jjwsm-Concurrent Repo-1")))
+  assert_equal(1, #vim.api.nvim_list_tabpages())
 end)
 
 test("surfaces unrelated add failures without tabs or deletion", function()
@@ -649,11 +809,13 @@ test("surfaces unrelated add failures without tabs or deletion", function()
   vim.fn.writefile({ "safe" }, marker)
   with_tmpdir(temp_root)
   set_tab_cwd(vim.api.nvim_get_current_tabpage(), current)
+  install_input("requested name")
 
   local notifications = capture_notifications()
   standard_mock({ { name = "default", root = current } }, function(args)
     if args[5] == "add" then
-      assert_equal("jjwsm-current-2", args[7])
+      assert_equal("requested name", args[7])
+      assert_equal(vim.fs.joinpath(parent, "jjwsm-current-2"), args[8])
       return result(1, "", "Error: backend refused the operation")
     end
   end)
@@ -702,6 +864,7 @@ test("real Jujutsu creation uses the exact repository-aware temporary layout", f
   run_sync({ "jj", "git", "init", repo }, sandbox)
   with_tmpdir(temp_root)
   set_tab_cwd(vim.api.nvim_get_current_tabpage(), repo)
+  install_input("prompted real workspace")
 
   command("new")
   eventually(function()
@@ -715,7 +878,7 @@ test("real Jujutsu creation uses the exact repository-aware temporary layout", f
   for _, workspace in ipairs(real_workspace_list(repo)) do
     names[workspace.name] = workspace.root
   end
-  assert_path_equal(expected, names["jjwsm-repo-1"])
+  assert_path_equal(expected, names["prompted real workspace"])
 end)
 
 for _, item in ipairs(tests) do
