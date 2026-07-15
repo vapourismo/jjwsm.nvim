@@ -16,12 +16,11 @@ Jujutsu 0.40 is the minimum because workspace templates need the workspace
 
 ## Installation
 
-With lazy.nvim, use the repository source once it is published, or a local
-checkout while developing:
+With lazy.nvim:
 
 ```lua
 {
-  dir = "/absolute/path/to/jjwsm.nvim",
+  "vapourismo/jjwsm.nvim",
   dependencies = {
     {
       "folke/snacks.nvim",
@@ -31,7 +30,6 @@ checkout while developing:
 }
 ```
 
-Replace `dir` with the plugin's repository spec when installing from a remote.
 The command is registered automatically when Neovim loads the plugin.
 
 ## Commands
