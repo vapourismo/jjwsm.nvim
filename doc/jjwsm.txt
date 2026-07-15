@@ -27,8 +27,9 @@ COMMANDS                                                       *jjwsm-commands*
 
                                                                   *:Jjwsm-new*
 :Jjwsm new
-    Create the lowest available jjwsm-N workspace under the shared temporary
-    parent and open it in a blank tabpage with a tab-local cwd.
+    Create the lowest available jjwsm-<repository>-N workspace under the
+    shared temporary parent and open it in a blank tabpage with a tab-local
+    cwd. <repository> is the default workspace root's basename.
 
 The command itself is global because user commands cannot be tab-local. The
 invoking tabpage cwd is captured and validated on every invocation.
@@ -38,16 +39,27 @@ TEMPORARY WORKSPACES                                         *jjwsm-temporary*
 
 The exact layout is: >
 
-    $TMPDIR/jjwsm.nvim/jjwsm-N
+    $TMPDIR/jjwsm.nvim/jjwsm-<repository>-N
+<
+For a default workspace root of /work/my-repo, the first workspace is named
+jjwsm-my-repo-1 and its path is: >
+
+    $TMPDIR/jjwsm.nvim/jjwsm-my-repo-1
 <
 The temporary root is obtained from vim.uv.os_tmpdir(). The jjwsm.nvim parent
 is created with mode 0700 when absent. An existing parent must be a real
 directory. Allocation begins at 1 and skips both names registered in the
 current repository and every path that already exists. Concurrent name or path
-collisions advance to the next counter.
+collisions advance to the next counter without changing the repository
+basename. Existing legacy jjwsm-N workspaces do not reserve counters in this
+repository-specific namespace.
 
 The final directory is initially absent; `jj workspace add` creates it. No PID,
 timestamp, or other component is appended to the workspace name or basename.
+The repository basename is copied verbatim from the retained default workspace
+root, preserving spaces, case, dots, and punctuation. If that workspace, its
+root, or a non-empty basename cannot be determined, creation stops before the
+temporary parent is created.
 
 ==============================================================================
 CLEANUP AND SAFETY                                               *jjwsm-cleanup*

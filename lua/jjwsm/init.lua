@@ -484,12 +484,32 @@ local function registered_names(workspaces)
   return names
 end
 
-local function allocate_candidate(parent, workspaces, first_counter)
+local function workspace_prefix(workspaces)
+  local default_workspace
+  for _, workspace in ipairs(workspaces) do
+    if workspace.name == "default" then
+      default_workspace = workspace
+      break
+    end
+  end
+
+  if not default_workspace or type(default_workspace.root) ~= "string" or default_workspace.root == "" then
+    return nil, "Could not determine the default workspace root"
+  end
+
+  local basename = vim.fs.basename(default_workspace.root)
+  if type(basename) ~= "string" or basename == "" then
+    return nil, "Could not determine a non-empty basename for the default workspace root"
+  end
+  return "jjwsm-" .. basename .. "-"
+end
+
+local function allocate_candidate(parent, prefix, workspaces, first_counter)
   local names = registered_names(workspaces)
   local counter = math.max(1, first_counter or 1)
 
   while true do
-    local name = "jjwsm-" .. counter
+    local name = prefix .. counter
     local root = path_join(parent, name)
     local state, detail = lstat_path(root)
     if state == "unknown" then
@@ -528,8 +548,8 @@ local function open_new_workspace(root)
   end
 end
 
-local function attempt_new_workspace(context, parent, workspaces, first_counter)
-  local candidate, allocation_error = allocate_candidate(parent, workspaces, first_counter)
+local function attempt_new_workspace(context, parent, prefix, workspaces, first_counter)
+  local candidate, allocation_error = allocate_candidate(parent, prefix, workspaces, first_counter)
   if not candidate then
     error_message(allocation_error)
     return
@@ -549,7 +569,7 @@ local function attempt_new_workspace(context, parent, workspaces, first_counter)
             )
             return
           end
-          attempt_new_workspace(context, parent, updated, candidate.counter + 1)
+          attempt_new_workspace(context, parent, prefix, updated, candidate.counter + 1)
         end)
       else
         error_message("Jujutsu could not create workspace: " .. result_message(result))
@@ -573,12 +593,18 @@ end
 
 local function new_workspace(context)
   prepare(context.cwd, function(workspaces)
+    local prefix, prefix_error = workspace_prefix(workspaces)
+    if not prefix then
+      error_message(prefix_error)
+      return
+    end
+
     local parent, parent_error = ensure_workspace_parent()
     if not parent then
       error_message(parent_error)
       return
     end
-    attempt_new_workspace(context, parent, workspaces, 1)
+    attempt_new_workspace(context, parent, prefix, workspaces, 1)
   end)
 end
 
@@ -626,6 +652,7 @@ M._test = {
   allocate_candidate = allocate_candidate,
   classify_directory = classify_directory,
   parse_workspaces = parse_workspaces,
+  workspace_prefix = workspace_prefix,
   workspace_template = WORKSPACE_TEMPLATE,
 }
 

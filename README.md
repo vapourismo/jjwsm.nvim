@@ -48,24 +48,37 @@ cwd is changed.
 
 ### `:Jjwsm new`
 
-Creates a workspace named `jjwsm-N`, opens one blank tabpage, and sets that
-tabpage's cwd to the new workspace root. Allocation starts at `N = 1` and uses
-the lowest counter for which both of these are free:
+Creates a workspace named `jjwsm-<repository>-N`, opens one blank tabpage, and
+sets that tabpage's cwd to the new workspace root. `<repository>` is the basename
+of the retained `default` workspace root. It is used verbatim, including spaces,
+case, dots, and punctuation. For a default root of `/work/my-repo`, the first
+workspace is named `jjwsm-my-repo-1` and uses this layout:
 
-- the name `jjwsm-N` in the current Jujutsu repository;
-- the shared path `$TMPDIR/jjwsm.nvim/jjwsm-N`.
+```text
+$TMPDIR/jjwsm.nvim/jjwsm-my-repo-1
+```
+
+Allocation starts at `N = 1` and uses the lowest counter for which both of these
+are free:
+
+- the name `jjwsm-<repository>-N` in the current Jujutsu repository;
+- the shared path `$TMPDIR/jjwsm.nvim/jjwsm-<repository>-N`.
 
 The operating system temporary root comes from `vim.uv.os_tmpdir()`, so
 `$TMPDIR` above is descriptive rather than a literal environment-variable
 lookup. The shared parent is created as mode `0700` when absent. An existing
 parent must be a real directory; symlinks and non-directory paths are rejected.
-The final `jjwsm-N` directory must not exist before creation and is created and
-populated by `jj workspace add` itself.
+The final repository-specific directory must not exist before creation and is
+created and populated by `jj workspace add` itself. Legacy `jjwsm-N` names do
+not reserve counters in the repository-specific namespace.
 
 If another process wins a path or workspace-name race, allocation resumes from
-the next counter. Unrelated Jujutsu failures are reported without opening a tab.
-Because the path namespace is shared, an existing candidate directory is never
-reused, even when it belongs to another repository or is empty.
+the next counter using the same derived repository basename. Unrelated Jujutsu
+failures are reported without opening a tab. Because the path namespace is
+shared, an existing candidate directory is never reused, even when it belongs
+to another repository or is empty. Creation is aborted before touching the
+temporary workspace parent if the `default` workspace root and its non-empty
+basename cannot be determined.
 
 ## Cleanup and safety
 
