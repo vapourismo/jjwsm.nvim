@@ -184,7 +184,7 @@ local function install_tabby(callback)
     if callback then
       callback(opts)
     end
-  end, { nargs = "+", force = true })
+  end, { nargs = "*", force = true })
   cleanup(function()
     pcall(vim.api.nvim_del_user_command, "Tabby")
   end)
@@ -362,6 +362,37 @@ test("forgets stale records and switches only the captured tabpage", function()
   assert_equal(1, #tabby_calls)
   assert_equal(invocation_tab, tabby_calls[1].tabpage)
   assert_equal({ "rename_tab", "current[target]" }, tabby_calls[1].fargs)
+end)
+
+test("unsets the tab name when switching to the default workspace", function()
+  local sandbox = temp_dir("switch-default")
+  local default = vim.fs.joinpath(sandbox, "default")
+  local current = vim.fs.joinpath(sandbox, "current")
+  mkdir(default)
+  mkdir(current)
+
+  local tabpage = vim.api.nvim_get_current_tabpage()
+  set_tab_cwd(tabpage, current)
+  local notifications = capture_notifications()
+  local picker = install_picker()
+  local tabby_calls = install_tabby()
+  standard_mock({
+    { name = "default", root = default },
+    { name = "current", root = current },
+  })
+
+  command("switch")
+  eventually(function()
+    return picker() ~= nil
+  end)
+  assert_equal("default", picker().items[1].name)
+  picker().confirm({ close = function() end }, picker().items[1])
+
+  assert_path_equal(default, tab_cwd(tabpage))
+  assert_equal(1, #tabby_calls)
+  assert_equal(tabpage, tabby_calls[1].tabpage)
+  assert_equal({ "rename_tab" }, tabby_calls[1].fargs)
+  assert_true(not has_notification(notifications, "tab could not be named"))
 end)
 
 test("switches successfully when the default basename is unavailable", function()

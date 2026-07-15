@@ -340,7 +340,8 @@ end
 
 local function rename_tabpage(tabpage, basename, workspace_name, basename_error)
   local failure_prefix = "Workspace activated, but its tab could not be named: "
-  if not basename then
+  local reset_name = workspace_name == "default"
+  if not reset_name and not basename then
     warning(failure_prefix .. basename_error)
     return
   end
@@ -359,9 +360,12 @@ local function rename_tabpage(tabpage, basename, workspace_name, basename_error)
     return
   end
 
-  local tabname = basename .. "[" .. workspace_name .. "]"
+  local args = { "rename_tab" }
+  if not reset_name then
+    args[#args + 1] = basename .. "[" .. workspace_name .. "]"
+  end
   local renamed, rename_error = pcall(vim.api.nvim_win_call, windows[1], function()
-    vim.api.nvim_cmd({ cmd = "Tabby", args = { "rename_tab", tabname } }, {})
+    vim.api.nvim_cmd({ cmd = "Tabby", args = args }, {})
   end)
   if not renamed then
     warning(failure_prefix .. tostring(rename_error))

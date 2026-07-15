@@ -89,9 +89,10 @@ determined. Cancellation and invalid input also leave the parent untouched.
 
 ## Tab names
 
-After a workspace is successfully activated, jjwsm.nvim asks Tabby.nvim to name
-the tab `<repository>[<workspace>]`. `<repository>` is the retained `default`
-workspace root's basename, with its original case, spaces, and punctuation, and
+After a new workspace or a non-default workspace switch is successfully
+activated, jjwsm.nvim asks Tabby.nvim to name the tab
+`<repository>[<workspace>]`. `<repository>` is the retained `default` workspace
+root's basename, with its original case, spaces, and punctuation, and
 `<workspace>` is the selected or prompted workspace name. For example, creating
 `feature: parser work` for `/work/Repo With Spaces.v1+Draft` produces:
 
@@ -99,12 +100,14 @@ workspace root's basename, with its original case, spaces, and punctuation, and
 Repo With Spaces.v1+Draft[feature: parser work]
 ```
 
-Switching renames the tabpage that invoked the picker, even if another tabpage
-is current when the selection is confirmed. A successful activation
-intentionally replaces that tab's previous Tabby name. Naming is best-effort:
-if Tabby is not installed, its command fails, or the default basename is
-unavailable during a switch, jjwsm.nvim warns but keeps the activated cwd and
-the previous tab name. Failed or stale activations do not rename a tab.
+Switching updates the tabpage that invoked the picker, even if another tabpage
+is current when the selection is confirmed. A successful switch to the
+`default` workspace invokes `:Tabby rename_tab` without a name, removing that
+tab's previous explicit Tabby name. Other successful activations intentionally
+replace the previous Tabby name. Naming is best-effort: if Tabby is not
+installed, its command fails, or the default basename is unavailable during a
+non-default switch, jjwsm.nvim warns but keeps the activated cwd and previous
+tab name. Failed or stale activations do not update a tab name.
 
 ## Cleanup and safety
 

@@ -72,7 +72,8 @@ validation is left to Jujutsu and its failure is reported.
 ==============================================================================
 TABBY INTEGRATION                                               *jjwsm-tabby*
 
-After a successful switch or creation, jjwsm.nvim invokes: >
+After a successful non-default switch or workspace creation, jjwsm.nvim
+invokes: >
 
     :Tabby rename_tab <repository>[<workspace>]
 <
@@ -84,14 +85,18 @@ the new tab is named: >
 
     Repo With Spaces.v1+Draft[feature: parser work]
 <
-Switching names the tabpage that invoked the picker, even if another tabpage is
-current at confirmation time. Successful activation replaces any prior Tabby
-name on that tab.
+Switching updates the tabpage that invoked the picker, even if another tabpage
+is current at confirmation time. Switching to the default workspace invokes: >
+
+    :Tabby rename_tab
+<
+This removes that tab's previous explicit Tabby name. Other successful
+activations replace any prior Tabby name on that tab.
 
 Naming is best-effort. If :Tabby is unavailable, renaming fails, or the default
-basename cannot be determined during a switch, jjwsm.nvim warns but preserves
-the activated cwd and previous tab name. Failed and stale activations do not
-rename tabs.
+basename cannot be determined during a non-default switch, jjwsm.nvim warns but
+preserves the activated cwd and previous tab name. Failed and stale activations
+do not update tab names.
 
 ==============================================================================
 CLEANUP AND SAFETY                                               *jjwsm-cleanup*
