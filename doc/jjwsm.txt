@@ -1,0 +1,65 @@
+*jjwsm.nvim*                 Jujutsu workspace manager for Neovim
+
+==============================================================================
+CONTENTS                                                     *jjwsm-contents*
+
+1. Requirements ............................................. |jjwsm-requirements|
+2. Commands ................................................. |jjwsm-commands|
+3. Temporary workspaces ..................................... |jjwsm-temporary|
+4. Cleanup and safety ........................................ |jjwsm-cleanup|
+
+==============================================================================
+REQUIREMENTS                                               *jjwsm-requirements*
+
+Neovim 0.10+, Jujutsu 0.40+, and Snacks.nvim with its picker enabled are
+required. The plugin registers its command automatically; do not call setup().
+
+==============================================================================
+COMMANDS                                                       *jjwsm-commands*
+
+                                                                     *:Jjwsm*
+                                                               *:Jjwsm-switch*
+:Jjwsm switch
+    Open a Snacks picker containing the other live workspaces registered in
+    the invoking tabpage cwd's Jujutsu repository. Workspace names and roots
+    are both searchable. Confirmation applies :tcd only to the tabpage that
+    invoked the command.
+
+                                                                  *:Jjwsm-new*
+:Jjwsm new
+    Create the lowest available jjwsm-N workspace under the shared temporary
+    parent and open it in a blank tabpage with a tab-local cwd.
+
+The command itself is global because user commands cannot be tab-local. The
+invoking tabpage cwd is captured and validated on every invocation.
+
+==============================================================================
+TEMPORARY WORKSPACES                                         *jjwsm-temporary*
+
+The exact layout is: >
+
+    $TMPDIR/jjwsm.nvim/jjwsm-N
+<
+The temporary root is obtained from vim.uv.os_tmpdir(). The jjwsm.nvim parent
+is created with mode 0700 when absent. An existing parent must be a real
+directory. Allocation begins at 1 and skips both names registered in the
+current repository and every path that already exists. Concurrent name or path
+collisions advance to the next counter.
+
+The final directory is initially absent; `jj workspace add` creates it. No PID,
+timestamp, or other component is appended to the workspace name or basename.
+
+==============================================================================
+CLEANUP AND SAFETY                                               *jjwsm-cleanup*
+
+Before either operation, jjwsm.nvim inspects all workspaces registered in the
+current repository. Missing and non-directory roots are forgotten from
+Jujutsu. Live directories are retained, including workspaces created by other
+tools. Indeterminate roots (such as permission failures) are retained with a
+warning. A failure from `jj workspace forget` aborts the requested operation.
+
+The plugin never removes a directory or file. Existing candidate directories
+are never reused, including empty directories. Temporary workspaces persist
+until removed by the user or operating system.
+
+vim:tw=78:ts=8:noet:ft=help:norl:

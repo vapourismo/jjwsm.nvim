@@ -1,0 +1,103 @@
+# jjwsm.nvim
+
+`jjwsm.nvim` is a small Jujutsu workspace manager for Neovim. It can switch the
+invoking tabpage to another workspace or create a temporary workspace in a new
+tabpage. There is no `setup()` call, configuration schema, default mapping, or
+filesystem-deletion command.
+
+## Requirements
+
+- Neovim 0.10 or newer
+- [Jujutsu 0.40 or newer](https://github.com/jj-vcs/jj/releases/tag/v0.40.0)
+- [Snacks.nvim](https://github.com/folke/snacks.nvim) with its picker enabled
+
+Jujutsu 0.40 is the minimum because workspace templates need the workspace
+`root()` method.
+
+## Installation
+
+With lazy.nvim, use the repository source once it is published, or a local
+checkout while developing:
+
+```lua
+{
+  dir = "/absolute/path/to/jjwsm.nvim",
+  dependencies = {
+    {
+      "folke/snacks.nvim",
+      opts = { picker = {} },
+    },
+  },
+}
+```
+
+Replace `dir` with the plugin's repository spec when installing from a remote.
+The command is registered automatically when Neovim loads the plugin.
+
+## Commands
+
+### `:Jjwsm switch`
+
+Lists the repository's other live workspaces in a Snacks picker. Both workspace
+name and absolute root are displayed and searchable. The workspace containing
+the invoking tabpage's cwd is excluded.
+
+The tabpage and its tab-local cwd are captured when the command starts. On
+confirmation, the selected root is checked again and `:tcd` is applied only to
+that captured tabpage, even if another tab has since become current. If the root
+disappeared while the picker was open, its Jujutsu record is forgotten and no
+cwd is changed.
+
+### `:Jjwsm new`
+
+Creates a workspace named `jjwsm-N`, opens one blank tabpage, and sets that
+tabpage's cwd to the new workspace root. Allocation starts at `N = 1` and uses
+the lowest counter for which both of these are free:
+
+- the name `jjwsm-N` in the current Jujutsu repository;
+- the shared path `$TMPDIR/jjwsm.nvim/jjwsm-N`.
+
+The operating system temporary root comes from `vim.uv.os_tmpdir()`, so
+`$TMPDIR` above is descriptive rather than a literal environment-variable
+lookup. The shared parent is created as mode `0700` when absent. An existing
+parent must be a real directory; symlinks and non-directory paths are rejected.
+The final `jjwsm-N` directory must not exist before creation and is created and
+populated by `jj workspace add` itself.
+
+If another process wins a path or workspace-name race, allocation resumes from
+the next counter. Unrelated Jujutsu failures are reported without opening a tab.
+Because the path namespace is shared, an existing candidate directory is never
+reused, even when it belongs to another repository or is empty.
+
+## Cleanup and safety
+
+Before either command, the plugin inspects every workspace registered in the
+repository associated with the invoking tabpage cwd:
+
+- live directories are retained, regardless of which tool created them;
+- records for roots that definitively do not exist or are not directories are
+  forgotten with `jj workspace forget`;
+- roots that cannot be inspected, for example because of a permission error,
+  are retained and produce a warning;
+- if Jujutsu cannot forget stale records, the requested operation is aborted.
+
+This metadata cleanup is limited to the current repository. The plugin never
+deletes, empties, or reuses a filesystem path. Temporary workspace directories
+remain until the user or operating system removes them; a later invocation will
+skip any path that still exists.
+
+The `:Jjwsm` command is global because Neovim has no tab-local user commands.
+Every invocation nevertheless resolves and validates the invoking tabpage's
+tab-local cwd. Jujutsu processes run asynchronously with argument arrays, so
+workspace names and paths are never interpolated into shell commands.
+
+## Development
+
+Run the dependency-light mocked tests and real Jujutsu integration tests with:
+
+```sh
+make test
+```
+
+The integration suite expects `nvim` and `jj` on `PATH`. It is currently tested
+with Neovim 0.12.2 and Jujutsu 0.43.0.
