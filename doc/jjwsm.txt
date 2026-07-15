@@ -6,13 +6,15 @@ CONTENTS                                                     *jjwsm-contents*
 1. Requirements ............................................. |jjwsm-requirements|
 2. Commands ................................................. |jjwsm-commands|
 3. Temporary workspaces ..................................... |jjwsm-temporary|
-4. Cleanup and safety ........................................ |jjwsm-cleanup|
+4. Tabby integration ......................................... |jjwsm-tabby|
+5. Cleanup and safety ........................................ |jjwsm-cleanup|
 
 ==============================================================================
 REQUIREMENTS                                               *jjwsm-requirements*
 
 Neovim 0.10+, Jujutsu 0.40+, and Snacks.nvim with its picker enabled are
-required. The plugin registers its command automatically; do not call setup().
+required. Tabby.nvim is optional and names successfully activated workspace
+tabs. The plugin registers its command automatically; do not call setup().
 
 ==============================================================================
 COMMANDS                                                       *jjwsm-commands*
@@ -66,6 +68,30 @@ root, or a non-empty basename cannot be determined, creation stops before the
 prompt is displayed or the temporary parent is created. Cancellation, blank
 input, and duplicate names also stop before the parent is created. Other name
 validation is left to Jujutsu and its failure is reported.
+
+==============================================================================
+TABBY INTEGRATION                                               *jjwsm-tabby*
+
+After a successful switch or creation, jjwsm.nvim invokes: >
+
+    :Tabby rename_tab <repository>[<workspace>]
+<
+<repository> is the retained default workspace root's basename and <workspace>
+is the selected or prompted workspace name. Both are copied verbatim, including
+spaces, case, dots, and punctuation. For a default root of
+/work/Repo With Spaces.v1+Draft and a prompted name of feature: parser work,
+the new tab is named: >
+
+    Repo With Spaces.v1+Draft[feature: parser work]
+<
+Switching names the tabpage that invoked the picker, even if another tabpage is
+current at confirmation time. Successful activation replaces any prior Tabby
+name on that tab.
+
+Naming is best-effort. If :Tabby is unavailable, renaming fails, or the default
+basename cannot be determined during a switch, jjwsm.nvim warns but preserves
+the activated cwd and previous tab name. Failed and stale activations do not
+rename tabs.
 
 ==============================================================================
 CLEANUP AND SAFETY                                               *jjwsm-cleanup*

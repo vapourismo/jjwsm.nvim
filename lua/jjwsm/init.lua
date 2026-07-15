@@ -318,6 +318,56 @@ local function set_tabpage_cwd(tabpage, root)
   return true
 end
 
+local function default_workspace_basename(workspaces)
+  local default_workspace
+  for _, workspace in ipairs(workspaces) do
+    if workspace.name == "default" then
+      default_workspace = workspace
+      break
+    end
+  end
+
+  if not default_workspace or type(default_workspace.root) ~= "string" or default_workspace.root == "" then
+    return nil, "Could not determine the default workspace root"
+  end
+
+  local basename = vim.fs.basename(default_workspace.root)
+  if type(basename) ~= "string" or basename == "" then
+    return nil, "Could not determine a non-empty basename for the default workspace root"
+  end
+  return basename
+end
+
+local function rename_tabpage(tabpage, basename, workspace_name, basename_error)
+  local failure_prefix = "Workspace activated, but its tab could not be named: "
+  if not basename then
+    warning(failure_prefix .. basename_error)
+    return
+  end
+  if vim.fn.exists(":Tabby") ~= 2 then
+    warning(failure_prefix .. "the :Tabby command is unavailable")
+    return
+  end
+  if not vim.api.nvim_tabpage_is_valid(tabpage) then
+    warning(failure_prefix .. "the activated tabpage no longer exists")
+    return
+  end
+
+  local windows = vim.api.nvim_tabpage_list_wins(tabpage)
+  if #windows == 0 or not vim.api.nvim_win_is_valid(windows[1]) then
+    warning(failure_prefix .. "the activated tabpage has no valid window")
+    return
+  end
+
+  local tabname = basename .. "[" .. workspace_name .. "]"
+  local renamed, rename_error = pcall(vim.api.nvim_win_call, windows[1], function()
+    vim.api.nvim_cmd({ cmd = "Tabby", args = { "rename_tab", tabname } }, {})
+  end)
+  if not renamed then
+    warning(failure_prefix .. tostring(rename_error))
+  end
+end
+
 local function forget_disappeared(context, workspace)
   run_jj(context.cwd, { "workspace", "forget", "--", workspace.name }, function(result, spawn_error)
     if spawn_error then
@@ -342,7 +392,7 @@ local function forget_disappeared(context, workspace)
   end)
 end
 
-local function confirm_switch(context, workspace)
+local function confirm_switch(context, workspace, basename, basename_error)
   local state, detail = classify_workspace(workspace)
   if state == "stale" then
     forget_disappeared(context, workspace)
@@ -362,10 +412,12 @@ local function confirm_switch(context, workspace)
   local changed, change_error = set_tabpage_cwd(context.tabpage, workspace.root)
   if not changed then
     error_message("Could not switch workspace: " .. change_error)
+    return
   end
+  rename_tabpage(context.tabpage, basename, workspace.name, basename_error)
 end
 
-local function open_picker(context, workspaces)
+local function open_picker(context, workspaces, basename, basename_error)
   local items = {}
   for _, workspace in ipairs(workspaces) do
     if not workspace_contains(workspace, context.cwd) then
@@ -407,7 +459,7 @@ local function open_picker(context, workspaces)
     confirm = function(picker, item)
       picker:close()
       if item then
-        confirm_switch(context, item)
+        confirm_switch(context, item, basename, basename_error)
       end
     end,
   })
@@ -418,7 +470,8 @@ end
 
 local function switch_workspace(context)
   prepare(context.cwd, function(workspaces)
-    open_picker(context, workspaces)
+    local basename, basename_error = default_workspace_basename(workspaces)
+    open_picker(context, workspaces, basename, basename_error)
   end)
 end
 
@@ -485,21 +538,9 @@ local function registered_names(workspaces)
 end
 
 local function workspace_prefix(workspaces)
-  local default_workspace
-  for _, workspace in ipairs(workspaces) do
-    if workspace.name == "default" then
-      default_workspace = workspace
-      break
-    end
-  end
-
-  if not default_workspace or type(default_workspace.root) ~= "string" or default_workspace.root == "" then
-    return nil, "Could not determine the default workspace root"
-  end
-
-  local basename = vim.fs.basename(default_workspace.root)
-  if type(basename) ~= "string" or basename == "" then
-    return nil, "Could not determine a non-empty basename for the default workspace root"
+  local basename, basename_error = default_workspace_basename(workspaces)
+  if not basename then
+    return nil, basename_error
   end
   return "jjwsm-" .. basename .. "-"
 end
@@ -528,7 +569,7 @@ local function collision_failure(result)
     or message:find("already tracked", 1, true) ~= nil
 end
 
-local function open_new_workspace(root)
+local function open_new_workspace(root, basename, workspace_name)
   local opened, open_error = pcall(vim.api.nvim_cmd, { cmd = "tabnew" }, {})
   if not opened then
     error_message("Workspace was created, but a new tabpage could not be opened: " .. tostring(open_error))
@@ -543,10 +584,12 @@ local function open_new_workspace(root)
       pcall(vim.api.nvim_cmd, { cmd = "tabclose", bang = true }, {})
     end
     error_message("Workspace was created, but its tabpage cwd could not be set: " .. change_error)
+    return
   end
+  rename_tabpage(tabpage, basename, workspace_name)
 end
 
-local function attempt_new_workspace(context, parent, prefix, workspace_name, first_counter)
+local function attempt_new_workspace(context, parent, prefix, basename, workspace_name, first_counter)
   local candidate, allocation_error = allocate_candidate(parent, prefix, first_counter)
   if not candidate then
     error_message(allocation_error)
@@ -571,7 +614,7 @@ local function attempt_new_workspace(context, parent, prefix, workspace_name, fi
             error_message(("Workspace %q is already registered in this repository"):format(workspace_name))
             return
           end
-          attempt_new_workspace(context, parent, prefix, workspace_name, candidate.counter + 1)
+          attempt_new_workspace(context, parent, prefix, basename, workspace_name, candidate.counter + 1)
         end)
       else
         error_message("Jujutsu could not create workspace: " .. result_message(result))
@@ -589,17 +632,18 @@ local function attempt_new_workspace(context, parent, prefix, workspace_name, fi
       )
       return
     end
-    open_new_workspace(candidate.root)
+    open_new_workspace(candidate.root, basename, workspace_name)
   end)
 end
 
 local function new_workspace(context)
   prepare(context.cwd, function(workspaces)
-    local prefix, prefix_error = workspace_prefix(workspaces)
-    if not prefix then
-      error_message(prefix_error)
+    local basename, basename_error = default_workspace_basename(workspaces)
+    if not basename then
+      error_message(basename_error)
       return
     end
+    local prefix = "jjwsm-" .. basename .. "-"
 
     local prompted, prompt_error = pcall(vim.ui.input, { prompt = "Workspace name: " }, function(workspace_name)
       if workspace_name == nil then
@@ -620,7 +664,7 @@ local function new_workspace(context)
         error_message(parent_error)
         return
       end
-      attempt_new_workspace(context, parent, prefix, workspace_name, 1)
+      attempt_new_workspace(context, parent, prefix, basename, workspace_name, 1)
     end)
     if not prompted then
       error_message("Could not prompt for a workspace name: " .. tostring(prompt_error))
@@ -671,6 +715,7 @@ end
 M._test = {
   allocate_candidate = allocate_candidate,
   classify_directory = classify_directory,
+  default_workspace_basename = default_workspace_basename,
   parse_workspaces = parse_workspaces,
   workspace_prefix = workspace_prefix,
   workspace_template = WORKSPACE_TEMPLATE,

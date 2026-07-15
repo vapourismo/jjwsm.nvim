@@ -10,6 +10,8 @@ filesystem-deletion command.
 - Neovim 0.10 or newer
 - [Jujutsu 0.40 or newer](https://github.com/jj-vcs/jj/releases/tag/v0.40.0)
 - [Snacks.nvim](https://github.com/folke/snacks.nvim) with its picker enabled
+- [Tabby.nvim](https://github.com/nanozuki/tabby.nvim) is optional and names
+  tabs after successful workspace activation
 
 Jujutsu 0.40 is the minimum because workspace templates need the workspace
 `root()` method.
@@ -84,6 +86,25 @@ candidate directory is never reused, even when it belongs to another repository
 or is empty. Creation is aborted before prompting or touching the temporary
 parent if the `default` workspace root and its non-empty basename cannot be
 determined. Cancellation and invalid input also leave the parent untouched.
+
+## Tab names
+
+After a workspace is successfully activated, jjwsm.nvim asks Tabby.nvim to name
+the tab `<repository>[<workspace>]`. `<repository>` is the retained `default`
+workspace root's basename, with its original case, spaces, and punctuation, and
+`<workspace>` is the selected or prompted workspace name. For example, creating
+`feature: parser work` for `/work/Repo With Spaces.v1+Draft` produces:
+
+```text
+Repo With Spaces.v1+Draft[feature: parser work]
+```
+
+Switching renames the tabpage that invoked the picker, even if another tabpage
+is current when the selection is confirmed. A successful activation
+intentionally replaces that tab's previous Tabby name. Naming is best-effort:
+if Tabby is not installed, its command fails, or the default basename is
+unavailable during a switch, jjwsm.nvim warns but keeps the activated cwd and
+the previous tab name. Failed or stale activations do not rename a tab.
 
 ## Cleanup and safety
 

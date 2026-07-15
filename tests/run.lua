@@ -173,6 +173,24 @@ local function install_picker()
   end
 end
 
+local function install_tabby(callback)
+  local calls = {}
+  vim.api.nvim_create_user_command("Tabby", function(opts)
+    calls[#calls + 1] = {
+      args = opts.args,
+      fargs = vim.deepcopy(opts.fargs),
+      tabpage = vim.api.nvim_get_current_tabpage(),
+    }
+    if callback then
+      callback(opts)
+    end
+  end, { nargs = "+", force = true })
+  cleanup(function()
+    pcall(vim.api.nvim_del_user_command, "Tabby")
+  end)
+  return calls
+end
+
 local function temp_dir(label)
   local path = vim.fn.tempname() .. "-" .. label
   assert_true(uv.fs_mkdir(path, 448), "could not create test directory " .. path)
@@ -307,6 +325,7 @@ test("forgets stale records and switches only the captured tabpage", function()
   local invocation_tab = vim.api.nvim_get_current_tabpage()
   set_tab_cwd(invocation_tab, current)
   local picker = install_picker()
+  local tabby_calls = install_tabby()
   local calls = standard_mock({
     { name = "default", root = current },
     { name = "target", root = target },
@@ -340,6 +359,128 @@ test("forgets stale records and switches only the captured tabpage", function()
 
   assert_path_equal(target, tab_cwd(invocation_tab))
   assert_path_equal(other, tab_cwd(other_tab))
+  assert_equal(1, #tabby_calls)
+  assert_equal(invocation_tab, tabby_calls[1].tabpage)
+  assert_equal({ "rename_tab", "current[target]" }, tabby_calls[1].fargs)
+end)
+
+test("switches successfully when the default basename is unavailable", function()
+  local sandbox = temp_dir("switch-no-default")
+  local current = vim.fs.joinpath(sandbox, "current")
+  local target = vim.fs.joinpath(sandbox, "target")
+  mkdir(current)
+  mkdir(target)
+  local tabpage = vim.api.nvim_get_current_tabpage()
+  set_tab_cwd(tabpage, current)
+
+  local notifications = capture_notifications()
+  local picker = install_picker()
+  local tabby_calls = install_tabby()
+  standard_mock({
+    { name = "active", root = current },
+    { name = "target", root = target },
+  })
+
+  command("switch")
+  eventually(function()
+    return picker() ~= nil
+  end)
+  picker().confirm({ close = function() end }, picker().items[1])
+
+  assert_path_equal(target, tab_cwd(tabpage))
+  assert_equal(0, #tabby_calls)
+  assert_true(has_notification(notifications, "tab could not be named.*default workspace root"))
+end)
+
+test("switches successfully when Tabby is unavailable", function()
+  local sandbox = temp_dir("switch-no-tabby")
+  local current = vim.fs.joinpath(sandbox, "current")
+  local target = vim.fs.joinpath(sandbox, "target")
+  mkdir(current)
+  mkdir(target)
+  local tabpage = vim.api.nvim_get_current_tabpage()
+  set_tab_cwd(tabpage, current)
+
+  local notifications = capture_notifications()
+  local picker = install_picker()
+  standard_mock({
+    { name = "default", root = current },
+    { name = "target", root = target },
+  })
+
+  command("switch")
+  eventually(function()
+    return picker() ~= nil
+  end)
+  picker().confirm({ close = function() end }, picker().items[1])
+
+  assert_path_equal(target, tab_cwd(tabpage))
+  assert_true(has_notification(notifications, "tab could not be named.*Tabby.*unavailable"))
+end)
+
+test("keeps a successful switch when Tabby renaming fails", function()
+  local sandbox = temp_dir("switch-tabby-failure")
+  local current = vim.fs.joinpath(sandbox, "current")
+  local target = vim.fs.joinpath(sandbox, "target")
+  mkdir(current)
+  mkdir(target)
+  local tabpage = vim.api.nvim_get_current_tabpage()
+  set_tab_cwd(tabpage, current)
+
+  local notifications = capture_notifications()
+  local picker = install_picker()
+  local tabby_calls = install_tabby(function()
+    error("simulated Tabby failure")
+  end)
+  standard_mock({
+    { name = "default", root = current },
+    { name = "target", root = target },
+  })
+
+  command("switch")
+  eventually(function()
+    return picker() ~= nil
+  end)
+  picker().confirm({ close = function() end }, picker().items[1])
+
+  assert_path_equal(target, tab_cwd(tabpage))
+  assert_equal(1, #tabby_calls)
+  assert_true(has_notification(notifications, "tab could not be named.*simulated Tabby failure"))
+end)
+
+test("does not rename when the invoking tabpage disappears before confirmation", function()
+  local sandbox = temp_dir("switch-closed-tab")
+  local current = vim.fs.joinpath(sandbox, "current")
+  local target = vim.fs.joinpath(sandbox, "target")
+  local other = vim.fs.joinpath(sandbox, "other")
+  mkdir(current)
+  mkdir(target)
+  mkdir(other)
+  local invocation_tab = vim.api.nvim_get_current_tabpage()
+  set_tab_cwd(invocation_tab, current)
+
+  local notifications = capture_notifications()
+  local picker = install_picker()
+  local tabby_calls = install_tabby()
+  standard_mock({
+    { name = "default", root = current },
+    { name = "target", root = target },
+  })
+
+  command("switch")
+  eventually(function()
+    return picker() ~= nil
+  end)
+  vim.api.nvim_cmd({ cmd = "tabnew" }, {})
+  local other_tab = vim.api.nvim_get_current_tabpage()
+  set_tab_cwd(other_tab, other)
+  vim.api.nvim_set_current_tabpage(invocation_tab)
+  vim.api.nvim_cmd({ cmd = "tabclose", bang = true }, {})
+  picker().confirm({ close = function() end }, picker().items[1])
+
+  assert_path_equal(other, tab_cwd(other_tab))
+  assert_equal(0, #tabby_calls)
+  assert_true(has_notification(notifications, "Could not switch workspace.*no longer exists"))
 end)
 
 test("forgets a workspace that disappears before picker confirmation", function()
@@ -352,6 +493,7 @@ test("forgets a workspace that disappears before picker confirmation", function(
 
   local notifications = capture_notifications()
   local picker = install_picker()
+  local tabby_calls = install_tabby()
   local calls = standard_mock({
     { name = "default", root = current },
     { name = "gone", root = target },
@@ -368,6 +510,7 @@ test("forgets a workspace that disappears before picker confirmation", function(
   end)
 
   assert_path_equal(current, tab_cwd(vim.api.nvim_get_current_tabpage()))
+  assert_equal(0, #tabby_calls)
   local forgot = false
   for _, call in ipairs(calls) do
     forgot = forgot or (call.args[5] == "forget" and call.args[6] == "--" and call.args[7] == "gone")
@@ -462,6 +605,9 @@ test("allocates the lowest repository-specific counter absent from paths", funct
   mkdir(vim.fs.joinpath(parent, "jjwsm-Repo.Name-3"))
   mkdir(vim.fs.joinpath(parent, "jjwsm-2"))
   local module = require("jjwsm")
+  assert_equal("$Repo With [Punctuation].v1!", module._test.default_workspace_basename({
+    { name = "default", root = "/work/$Repo With [Punctuation].v1!" },
+  }))
   assert_equal("jjwsm-$Repo With [Punctuation].v1!-", module._test.workspace_prefix({
     { name = "default", root = "/work/$Repo With [Punctuation].v1!" },
   }))
@@ -485,6 +631,7 @@ test("passes a prompted name verbatim while generating the repository-aware path
   local prompted_name = "  Feature: spaces + punctuation!?  "
   local input_calls = install_input(prompted_name)
 
+  local tabby_calls = install_tabby()
   local add_call
   standard_mock({ { name = "default", root = current } }, function(args, opts)
     if args[5] == "add" then
@@ -512,6 +659,12 @@ test("passes a prompted name verbatim while generating the repository-aware path
   assert_equal("rwx------", vim.fn.getfperm(expected_parent))
   assert_path_equal(expected_root, tab_cwd(vim.api.nvim_get_current_tabpage()))
   assert_equal("", vim.api.nvim_buf_get_name(0), "new tab should contain a blank buffer")
+  assert_equal(1, #tabby_calls)
+  assert_equal(vim.api.nvim_get_current_tabpage(), tabby_calls[1].tabpage)
+  assert_equal({
+    "rename_tab",
+    "Repo With Spaces.v1+Draft[  Feature: spaces + punctuation!?  ]",
+  }, tabby_calls[1].fargs)
 end)
 
 test("cancels workspace creation without creating a parent or tab", function()
@@ -696,6 +849,7 @@ test("rescans from the next counter after a concurrent collision", function()
   set_tab_cwd(vim.api.nvim_get_current_tabpage(), current)
   install_input("collision workspace")
 
+  local tabby_calls = install_tabby()
   local parent = vim.fs.joinpath(temp_root, "jjwsm.nvim")
   local list_count = 0
   local add_names = {}
@@ -745,6 +899,7 @@ test("rescans from the next counter after a concurrent collision", function()
     "directory",
     require("jjwsm")._test.classify_directory(vim.fs.joinpath(parent, "jjwsm-Collision Repo-1"))
   )
+  assert_equal({ "rename_tab", "Collision Repo[collision workspace]" }, tabby_calls[1].fargs)
 end)
 
 test("stops retrying when a collision rescan finds the prompted name", function()
@@ -866,6 +1021,7 @@ test("real Jujutsu creation uses the exact repository-aware temporary layout", f
   set_tab_cwd(vim.api.nvim_get_current_tabpage(), repo)
   install_input("prompted real workspace")
 
+  local tabby_calls = install_tabby()
   command("new")
   eventually(function()
     return #vim.api.nvim_list_tabpages() == 2
@@ -879,6 +1035,7 @@ test("real Jujutsu creation uses the exact repository-aware temporary layout", f
     names[workspace.name] = workspace.root
   end
   assert_path_equal(expected, names["prompted real workspace"])
+  assert_equal({ "rename_tab", "repo[prompted real workspace]" }, tabby_calls[1].fargs)
 end)
 
 for _, item in ipairs(tests) do
