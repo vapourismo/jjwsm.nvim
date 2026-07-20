@@ -328,6 +328,14 @@ test("registers command, completes arguments, and rejects invalid dispatch", fun
   assert_equal(0, #calls, "invalid commands must not start processes")
 end)
 
+test("exports public Lua action entry points", function()
+  local module = require("jjwsm")
+
+  assert_equal("function", type(module.switch))
+  assert_equal("function", type(module.new))
+  assert_equal("function", type(module.delete))
+end)
+
 test("parses NUL-delimited workspace records and validates their framing", function()
   local module = require("jjwsm")
   local expected = {
@@ -385,7 +393,7 @@ test("recovers a legacy default root before opening the switch picker", function
     end
   end)
 
-  command("switch")
+  require("jjwsm").switch("ignored surplus argument")
   eventually(function()
     return picker() ~= nil
   end, "picker did not open after recovering the current root")
@@ -435,7 +443,7 @@ test("uses a recovered default root to create a workspace", function()
     end
   end)
 
-  command("new")
+  require("jjwsm").new("ignored surplus argument")
   eventually(function()
     return add_call ~= nil
   end, "workspace add did not run after recovering the current root")
@@ -469,7 +477,7 @@ test("uses a recovered non-default root to resolve deletion", function()
     end
   end)
 
-  command("delete")
+  require("jjwsm").delete("ignored surplus argument")
   eventually(function()
     return not vim.api.nvim_tabpage_is_valid(invocation_tab)
   end, "recovered workspace tab was not closed")

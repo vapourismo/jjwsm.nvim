@@ -857,14 +857,9 @@ local commands = {
   delete = delete_workspace,
 }
 
-function M._dispatch(args)
-  if #args ~= 1 or not commands[args[1]] then
-    error_message("Usage: :Jjwsm {switch|new|delete}")
-    return
-  end
-
+local function run_action(action)
   local tabpage = vim.api.nvim_get_current_tabpage()
-  if args[1] == "delete" and #vim.api.nvim_list_tabpages() <= 1 then
+  if action == "delete" and #vim.api.nvim_list_tabpages() <= 1 then
     warning("Cannot delete a workspace when only one tabpage exists")
     return
   end
@@ -876,8 +871,29 @@ function M._dispatch(args)
 
   local context = { tabpage = tabpage, cwd = cwd }
   check_dependencies(cwd, function()
-    commands[args[1]](context)
+    commands[action](context)
   end)
+end
+
+function M.switch()
+  run_action("switch")
+end
+
+function M.new()
+  run_action("new")
+end
+
+function M.delete()
+  run_action("delete")
+end
+
+function M._dispatch(args)
+  if #args ~= 1 or not commands[args[1]] then
+    error_message("Usage: :Jjwsm {switch|new|delete}")
+    return
+  end
+
+  run_action(args[1])
 end
 
 function M._complete(arglead, cmdline, cursorpos)

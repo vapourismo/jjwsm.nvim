@@ -4,11 +4,12 @@
 CONTENTS                                                     *jjwsm-contents*
 
 1. Requirements ............................................. |jjwsm-requirements|
-2. Commands ................................................. |jjwsm-commands|
-3. Temporary workspaces ..................................... |jjwsm-temporary|
-4. Deleting workspaces ....................................... |jjwsm-delete|
-5. Tabby integration ......................................... |jjwsm-tabby|
-6. Cleanup and safety ........................................ |jjwsm-cleanup|
+2. Lua API ................................................... |jjwsm-lua-api|
+3. Commands ................................................. |jjwsm-commands|
+4. Temporary workspaces ..................................... |jjwsm-temporary|
+5. Deleting workspaces ....................................... |jjwsm-delete|
+6. Tabby integration ......................................... |jjwsm-tabby|
+7. Cleanup and safety ........................................ |jjwsm-cleanup|
 
 ==============================================================================
 REQUIREMENTS                                               *jjwsm-requirements*
@@ -16,6 +17,28 @@ REQUIREMENTS                                               *jjwsm-requirements*
 Neovim 0.10+, Jujutsu 0.40+, and Snacks.nvim with its picker enabled are
 required. Tabby.nvim is optional and names successfully activated workspace
 tabs. The plugin registers its command automatically; do not call setup().
+
+==============================================================================
+LUA API                                                     *jjwsm-lua-api*
+
+The three command actions are also public, asynchronous Lua functions: >
+
+    require("jjwsm").switch()
+    require("jjwsm").new()
+    require("jjwsm").delete()
+<
+They take no arguments and report outcomes through vim.notify(), matching the
+corresponding :Jjwsm subcommands. For example, they can be mapped directly: >
+
+    local jjwsm = require("jjwsm")
+    vim.keymap.set("n", "<leader>ws", jjwsm.switch,
+        { desc = "Switch Jujutsu workspace" })
+    vim.keymap.set("n", "<leader>wn", jjwsm.new,
+        { desc = "New Jujutsu workspace" })
+    vim.keymap.set("n", "<leader>wd", jjwsm.delete,
+        { desc = "Delete Jujutsu workspace" })
+<
+No setup() call is needed.
 
 ==============================================================================
 COMMANDS                                                       *jjwsm-commands*

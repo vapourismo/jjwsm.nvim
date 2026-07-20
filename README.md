@@ -34,6 +34,30 @@ With lazy.nvim:
 
 The command is registered automatically when Neovim loads the plugin.
 
+## Lua API
+
+Each command action is also available as a public, asynchronous Lua function:
+
+```lua
+require("jjwsm").switch()
+require("jjwsm").new()
+require("jjwsm").delete()
+```
+
+The functions take no arguments and report outcomes with `vim.notify()`, just
+like the corresponding `:Jjwsm` subcommands. They can be used directly in
+keymaps:
+
+```lua
+local jjwsm = require("jjwsm")
+
+vim.keymap.set("n", "<leader>ws", jjwsm.switch, { desc = "Switch Jujutsu workspace" })
+vim.keymap.set("n", "<leader>wn", jjwsm.new, { desc = "New Jujutsu workspace" })
+vim.keymap.set("n", "<leader>wd", jjwsm.delete, { desc = "Delete Jujutsu workspace" })
+```
+
+No `setup()` call is needed.
+
 ## Commands
 
 ### `:Jjwsm switch`
