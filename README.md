@@ -5,6 +5,9 @@ invoking tabpage to another workspace, create a temporary workspace in a new
 tabpage, or forget a workspace while closing its tabpage. There is no `setup()`
 call, configuration schema, default mapping, or filesystem-deletion command.
 
+> [!NOTE]
+> This plugin is vibe-coded.
+
 ## Requirements
 
 - Neovim 0.10 or newer
